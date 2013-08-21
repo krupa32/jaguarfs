@@ -8,10 +8,13 @@
 #include <stdlib.h>
 #include <errno.h>
 
-#define BLK_SIZE	4096
-#define INODE_SIZE	128
+#define BLK_SIZE		4096
+#define INODE_SIZE		128
+#define INODE_NUM_BLOCK_ENTRIES	15
 
 #define ROUND_TO_BLK_SIZE(s)		(((s) + BLK_SIZE - 1) / BLK_SIZE * BLK_SIZE)
+
+#define DENTRY_TYPE_DIR		2
 
 struct super_block
 {
@@ -25,6 +28,20 @@ struct super_block
 	int inode_tbl_start;
 	int inode_tbl_size;
 	int data_start;
+};
+
+struct disk_inode
+{
+	int size;
+	unsigned int blocks[INODE_NUM_BLOCK_ENTRIES];
+	char rsvd[64];
+};
+
+struct dentry
+{
+	unsigned int inode;
+	char file_type;
+	char name[27];
 };
 
 int fill_super_block(struct super_block *sb, int disk_size)
@@ -49,17 +66,22 @@ int fill_super_block(struct super_block *sb, int disk_size)
 
 	sb->sb_start = 0;
 	sb->sb_size = BLK_SIZE;
+	printf("super block: start = %d, size = %d\n", sb->sb_start, sb->sb_size);
 
 	sb->data_bmap_start = sb->sb_start + sb->sb_size;
 	sb->data_bmap_size = data_bmap_size;
+	printf("data bitmap: start = %d, size = %d\n", sb->data_bmap_start, sb->data_bmap_size);
 
 	sb->inode_bmap_start = sb->data_bmap_start + sb->data_bmap_size;
 	sb->inode_bmap_size = inode_bmap_size;
+	printf("inode bitmap: start = %d, size = %d\n", sb->inode_bmap_start, sb->inode_bmap_size);
 
 	sb->inode_tbl_start = sb->inode_bmap_start + sb->inode_bmap_size;
 	sb->inode_tbl_size = inode_tbl_size;
+	printf("inode table: start = %d, size = %d\n", sb->inode_tbl_start, sb->inode_tbl_size);
 
 	sb->data_start = sb->inode_tbl_start + sb->inode_tbl_size;
+	printf("data: start = %d\n", sb->data_start);
 
 	return 0;
 }
@@ -134,6 +156,46 @@ int write_inode_bmap(FILE *fp, struct super_block *sb)
 
 	free(inode_bmap);
 
+	return 0;
+}
+
+int write_inode_table(FILE *fp, struct super_block *sb)
+{
+	struct disk_inode root_inode;
+
+	memset(&root_inode, 0, sizeof(root_inode));
+	root_inode.size = sizeof(struct dentry);
+	root_inode.blocks[0] = sb->data_start / BLK_SIZE;
+
+	fseek(fp, sb->inode_tbl_start, SEEK_SET);
+	if (fwrite(&root_inode, sizeof(root_inode), 1, fp) != 1) {
+		return -1;
+	}
+
+	return 0;
+
+}
+
+int write_data(FILE *fp, struct super_block *sb)
+{
+	struct dentry *root_dentry;
+	char blkbuf[BLK_SIZE];
+
+	memset(blkbuf, 0, BLK_SIZE);
+
+	root_dentry = (struct dentry *)blkbuf;
+
+	root_dentry->inode = 0;
+	root_dentry->file_type = DENTRY_TYPE_DIR;
+	strcpy(root_dentry->name, ".");
+
+	fseek(fp, sb->data_start, SEEK_SET);
+	if (fwrite(blkbuf, BLK_SIZE, 1, fp) != 1) {
+		return -1;
+	}
+
+	return 0;
+
 }
 
 int main(int argc, char **argv)
@@ -178,6 +240,22 @@ int main(int argc, char **argv)
 
 	printf("writing inode bitmap...");
 	if (write_inode_bmap(fp, &sb) < 0) {
+		perror(NULL);
+		ret = errno;
+		goto fail;
+	}
+	printf("[ok]\n");
+
+	printf("writing inode table...");
+	if (write_inode_table(fp, &sb) < 0) {
+		perror(NULL);
+		ret = errno;
+		goto fail;
+	}
+	printf("[ok]\n");
+
+	printf("writing data (root dir entry)...");
+	if (write_data(fp, &sb) < 0) {
 		perror(NULL);
 		ret = errno;
 		goto fail;

@@ -1,6 +1,9 @@
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/buffer_head.h>
 #include <linux/mount.h>
+#include <linux/slab.h>
+#include "jaguar.h"
 #include "debug.h"
 
 /* Supposed to find the inode corresponding to d->d_name.name, iget the
@@ -27,7 +30,15 @@ struct dentry *jaguar_lookup(struct inode *dir, struct dentry *d, unsigned int f
  */
 static int jaguar_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
+	int blk_num, blk_off;
+
 	DBG("jaguar_readdir: entering, pos=%d\n", (int)filp->f_pos);
+
+	blk_num = filp->f_pos / JAGUAR_BLOCK_SIZE;
+	blk_off = filp->f_pos % JAGUAR_BLOCK_SIZE;
+	DBG("blknum=%d, blkoff=%d\n", blk_num, blk_off);
+
+	/* read the dir entried from the disk */
 
 	if (filp->f_pos == 0) {
 		filldir(dirent, "krupa", 5, 0, 1, DT_UNKNOWN);
@@ -59,9 +70,35 @@ static int jaguar_fill_super(struct super_block *sb, void *data, int silent)
 {
 	int ret = -EINVAL;
 	struct inode *root_inode = NULL;
+	struct jaguar_super_block *jsb;
 
 	DBG("jaguar_fill_super: entering\n");
 
+	/* allocate in-memory super block */
+	if ((jsb = kzalloc(sizeof(*jsb), GFP_KERNEL)) == NULL) {
+		ERR("no memory\n");
+		ret = -ENOMEM;
+		goto fail;	
+	}
+
+	sb->s_fs_info = jsb;
+
+	/* set block size of super block AND the backing block dev */
+	if (!sb_set_blocksize(sb, JAGUAR_BLOCK_SIZE)) {
+		ERR("error setting block size\n");
+		ret = -EIO;
+		goto fail;
+	}
+
+	/* read the super block from disk */
+	if (jaguar_sb_read(sb)) {
+		ERR("error reading super block from disk\n");
+		ret = -EIO;
+		goto fail;
+	}
+	DBG("on disk: sb->name=%s\n", jsb->disk_copy.name);
+
+	/* create the root dir inode of the fs */
 	root_inode = new_inode(sb);
 	if (IS_ERR(root_inode)) {
 		ret = PTR_ERR(root_inode);
@@ -73,6 +110,7 @@ static int jaguar_fill_super(struct super_block *sb, void *data, int silent)
 	root_inode->i_fop = &jaguar_dir_file_ops;
 	set_nlink(root_inode, 2);
 
+	/* setup the dentry of the root dir in super block */
 	sb->s_root = d_make_root(root_inode);
 	if (!sb->s_root) {
 		ERR("d_make_root failed\n");

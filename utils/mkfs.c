@@ -12,6 +12,9 @@
 #define INODE_SIZE		128
 #define INODE_NUM_BLOCK_ENTRIES	15
 
+#define INODE_TYPE_FILE		1
+#define INODE_TYPE_DIR		2
+
 #define ROUND_TO_BLK_SIZE(s)		(((s) + BLK_SIZE - 1) / BLK_SIZE * BLK_SIZE)
 
 #define DENTRY_TYPE_DIR		2
@@ -33,15 +36,15 @@ struct super_block
 struct disk_inode
 {
 	int size;
+	int type;
 	unsigned int blocks[INODE_NUM_BLOCK_ENTRIES];
-	char rsvd[64];
+	char rsvd[60];
 };
 
 struct dentry
 {
 	unsigned int inode;
-	char file_type;
-	char name[27];
+	char name[28];
 };
 
 int fill_super_block(struct super_block *sb, int disk_size)
@@ -165,9 +168,13 @@ int write_inode_table(FILE *fp, struct super_block *sb)
 
 	memset(&root_inode, 0, sizeof(root_inode));
 	root_inode.size = sizeof(struct dentry);
+	root_inode.type = INODE_TYPE_DIR;
 	root_inode.blocks[0] = sb->data_start / BLK_SIZE;
 
-	fseek(fp, sb->inode_tbl_start, SEEK_SET);
+	/* skip one disk inode, as there is no inode 0.
+	 * inum's only start with 1.
+	 */
+	fseek(fp, sb->inode_tbl_start + sizeof(root_inode), SEEK_SET);
 	if (fwrite(&root_inode, sizeof(root_inode), 1, fp) != 1) {
 		return -1;
 	}
@@ -185,8 +192,7 @@ int write_data(FILE *fp, struct super_block *sb)
 
 	root_dentry = (struct dentry *)blkbuf;
 
-	root_dentry->inode = 0;
-	root_dentry->file_type = DENTRY_TYPE_DIR;
+	root_dentry->inode = 1; /* inum MUST start from 1 */
 	strcpy(root_dentry->name, ".");
 
 	fseek(fp, sb->data_start, SEEK_SET);

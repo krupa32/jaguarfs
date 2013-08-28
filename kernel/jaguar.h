@@ -2,7 +2,18 @@
 #define JAGUAR_H
 
 #define JAGUAR_BLOCK_SIZE		4096
+#define JAGUAR_INODE_SIZE		128
 #define JAGUAR_INODE_NUM_BLOCK_ENTRIES	15
+
+#define BYTES_TO_BLOCK(b)		((b)/JAGUAR_BLOCK_SIZE)
+#define JAGUAR_NUM_INODES_PER_BLOCK	(JAGUAR_BLOCK_SIZE / JAGUAR_INODE_SIZE)
+
+#define INUM_TO_BLOCK(ino)		((ino) / JAGUAR_NUM_INODES_PER_BLOCK)
+#define INUM_TO_OFFSET(ino)		(((ino) % JAGUAR_NUM_INODES_PER_BLOCK) * JAGUAR_INODE_SIZE)
+
+#define INODE_TYPE_FILE			1
+#define INODE_TYPE_DIR			2
+
 /*
  * On-disk data structures.
  */
@@ -24,10 +35,16 @@ struct jaguar_super_block_on_disk
 struct jaguar_inode_on_disk
 {
 	int size;
+	int type;
 	unsigned int blocks[JAGUAR_INODE_NUM_BLOCK_ENTRIES];
-	char rsvd[64];
+	char rsvd[60];
 };
 
+struct jaguar_dentry_on_disk
+{
+	unsigned int inum;
+	char name[28];
+};
 
 /*
  * In-memory data structures

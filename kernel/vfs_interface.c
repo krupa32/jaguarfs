@@ -2,65 +2,9 @@
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
 #include <linux/mount.h>
-#include <linux/slab.h>
 #include "jaguar.h"
 #include "debug.h"
 
-/* Supposed to find the inode corresponding to d->d_name.name, iget the
- * corresponding inode, and map the 'd' to the inode using d_add().
- */
-struct dentry *jaguar_lookup(struct inode *dir, struct dentry *d, unsigned int flags)
-{
-	DBG("jaguar_lookup: entering\n");
-	DBG("name=%s\n", d->d_name.name);
-
-	d_add(d, dir);
-
-	DBG("jaguar_lookup: leaving\n");
-	return NULL;
-}
-
-/* This is called by getdents syscall, which is called by ls.
- * Supposed to read from the filp->f_pos offset of the directory file,
- * and fill in dirent entries using the filldir callback fn.
- * dirent entries are filled as long as filldir returns 0.
- * Note that filp->f_pos has to be updated by this function to reflect
- * how far in the dir we have proceeded.
- * Also, filldir fn ptr is usually compat_filldir.
- */
-static int jaguar_readdir(struct file *filp, void *dirent, filldir_t filldir)
-{
-	int blk_num, blk_off;
-
-	DBG("jaguar_readdir: entering, pos=%d\n", (int)filp->f_pos);
-
-	blk_num = filp->f_pos / JAGUAR_BLOCK_SIZE;
-	blk_off = filp->f_pos % JAGUAR_BLOCK_SIZE;
-	DBG("blknum=%d, blkoff=%d\n", blk_num, blk_off);
-
-	/* read the dir entried from the disk */
-
-	if (filp->f_pos == 0) {
-		filldir(dirent, "krupa", 5, 0, 1, DT_UNKNOWN);
-		filp->f_pos += 5;
-	}
-
-	DBG("jaguar_readdir: leaving\n");
-
-	return 0;
-}	
-
-static const struct super_operations jaguar_sops = {
-	NULL
-};
-
-static const struct inode_operations jaguar_dir_inode_ops = {
-	.lookup		= jaguar_lookup
-};
-
-static const struct file_operations jaguar_dir_file_ops = {
-	.readdir	= jaguar_readdir
-};
 
 /* Supposed to fill the super block related information.
  * Most important info is the s_root field, which points to
@@ -70,25 +14,8 @@ static int jaguar_fill_super(struct super_block *sb, void *data, int silent)
 {
 	int ret = -EINVAL;
 	struct inode *root_inode = NULL;
-	struct jaguar_super_block *jsb;
 
 	DBG("jaguar_fill_super: entering\n");
-
-	/* allocate in-memory super block */
-	if ((jsb = kzalloc(sizeof(*jsb), GFP_KERNEL)) == NULL) {
-		ERR("no memory\n");
-		ret = -ENOMEM;
-		goto fail;	
-	}
-
-	sb->s_fs_info = jsb;
-
-	/* set block size of super block AND the backing block dev */
-	if (!sb_set_blocksize(sb, JAGUAR_BLOCK_SIZE)) {
-		ERR("error setting block size\n");
-		ret = -EIO;
-		goto fail;
-	}
 
 	/* read the super block from disk */
 	if (jaguar_sb_read(sb)) {
@@ -96,18 +23,23 @@ static int jaguar_fill_super(struct super_block *sb, void *data, int silent)
 		ret = -EIO;
 		goto fail;
 	}
-	DBG("on disk: sb->name=%s\n", jsb->disk_copy.name);
 
 	/* create the root dir inode of the fs */
 	root_inode = new_inode(sb);
 	if (IS_ERR(root_inode)) {
+		ERR("error allocating root inode\n");
 		ret = PTR_ERR(root_inode);
 		goto fail;
 	}
-	root_inode->i_ino = 1;
-	root_inode->i_mode = S_IFDIR | 0755;
-	root_inode->i_op = &jaguar_dir_inode_ops;
-	root_inode->i_fop = &jaguar_dir_file_ops;
+
+	root_inode->i_ino = 1; /* inum MUST start from 1 */
+
+	/* read the root inode from disk */
+	if (jaguar_inode_read(root_inode)) {
+		ERR("error reading root inode from disk\n");
+		ret = -EIO;
+		goto fail;
+	}
 	set_nlink(root_inode, 2);
 
 	/* setup the dentry of the root dir in super block */
@@ -120,7 +52,7 @@ static int jaguar_fill_super(struct super_block *sb, void *data, int silent)
 	return 0;
 
 fail:
-	DBG("error = %d\n", ret);
+
 	return ret;
 }
 

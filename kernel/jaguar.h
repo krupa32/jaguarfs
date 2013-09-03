@@ -68,6 +68,14 @@ int jaguar_sb_read(struct super_block *sb);
 /*
  * Inode APIs
  */
+struct inode * jaguar_iget(struct super_block *sb, int inum);
 int jaguar_inode_read(struct inode *i); 
+
+/*
+ * Utility APIs
+ */
+int jaguar_find_first_zero_bit(void *bmap, int size);
+void jaguar_set_bit(void *bmap, int pos);
+void jaguar_clear_bit(void *bmap, int pos);
 
 #endif // JAGUAR_H

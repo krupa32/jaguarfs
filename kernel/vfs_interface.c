@@ -25,21 +25,13 @@ static int jaguar_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 	/* create the root dir inode of the fs */
-	root_inode = new_inode(sb);
+	root_inode = jaguar_iget(sb, 1);
 	if (IS_ERR(root_inode)) {
 		ERR("error allocating root inode\n");
 		ret = PTR_ERR(root_inode);
 		goto fail;
 	}
 
-	root_inode->i_ino = 1; /* inum MUST start from 1 */
-
-	/* read the root inode from disk */
-	if (jaguar_inode_read(root_inode)) {
-		ERR("error reading root inode from disk\n");
-		ret = -EIO;
-		goto fail;
-	}
 	set_nlink(root_inode, 2);
 
 	/* setup the dentry of the root dir in super block */

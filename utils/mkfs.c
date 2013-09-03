@@ -128,6 +128,11 @@ int write_data_bmap(FILE *fp, struct super_block *sb)
 	for (i = 0; i < n_fs_blks; i++)
 		set_bit(data_bmap, i);
 
+	/* the first data block is also reserved.
+	 * it holds the dentry for root dir.
+	 */
+	set_bit(data_bmap, n_fs_blks);
+
 	fseek(fp, sb->data_bmap_start, SEEK_SET);
 	if (fwrite(data_bmap, sb->data_bmap_size, 1, fp) != 1) {
 		free(data_bmap);
@@ -149,7 +154,7 @@ int write_inode_bmap(FILE *fp, struct super_block *sb)
 	}
 	memset(inode_bmap, 0, sb->inode_bmap_size);
 
-	*inode_bmap |= 0x80; // only first (root) inode is allocated
+	*inode_bmap |= 0xC0; // 0th inode is dummy, 1st inode is root inode
 
 	fseek(fp, sb->inode_bmap_start, SEEK_SET);
 	if (fwrite(inode_bmap, sb->inode_bmap_size, 1, fp) != 1) {

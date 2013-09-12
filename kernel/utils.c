@@ -21,7 +21,7 @@ int jaguar_find_first_zero_bit(void *buf, int size)
 		ret++;
 	}
 
-	DBG("jaguar_find_first_zero_bit: returning %d\n", ret);
+	//DBG("jaguar_find_first_zero_bit: returning %d\n", ret);
 	return ret;
 }
 
@@ -36,7 +36,7 @@ void jaguar_set_bit(void *buf, int pos)
 	while (bit--)
 		mask = mask >> 1;
 
-	DBG("jaguar_set_bit: pos=%d, byte=%d, mask=0x%x\n", pos, byte, mask);
+	//DBG("jaguar_set_bit: pos=%d, byte=%d, mask=0x%x\n", pos, byte, mask);
 	bmap[byte] |= mask;
 }
 
@@ -51,6 +51,6 @@ void jaguar_clear_bit(void *buf, int pos)
 	while (bit--)
 		mask = mask >> 1;
 
-	DBG("jaguar_clear_bit: pos=%d, byte=%d, mask=0x%x\n", pos, byte, mask);
+	//DBG("jaguar_clear_bit: pos=%d, byte=%d, mask=0x%x\n", pos, byte, mask);
 	bmap[byte] &= ~mask;
 }

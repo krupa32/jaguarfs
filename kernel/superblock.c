@@ -4,7 +4,7 @@
 #include "jaguar.h"
 #include "debug.h"
 
-int jaguar_sb_read(struct super_block *sb)
+static int read_sb(struct super_block *sb)
 {
 	int ret = -EINVAL;
 	struct buffer_head *bh;
@@ -49,3 +49,62 @@ fail:
 
 	return ret;
 }
+
+static int jaguar_write_inode(struct inode *i, struct writeback_control *wbc)
+{
+	DBG("jaguar_write_inode: entering, inum=%d\n", (int)i->i_ino);
+
+	return write_inode_info(i);
+}
+
+const struct super_operations jaguar_sops = {
+	.write_inode		= jaguar_write_inode
+};
+
+/* Supposed to fill the super block related information.
+ * Most important info is the s_root field, which points to
+ * the inode of the root directory, along with its inode_ops and f_ops.
+ */
+int jaguar_fill_super(struct super_block *sb, void *data, int silent)
+{
+	int ret = -EINVAL;
+	struct inode *root_inode = NULL;
+
+	DBG("jaguar_fill_super: entering\n");
+
+	/* read the super block from disk */
+	if (read_sb(sb)) {
+		ERR("error reading super block from disk\n");
+		ret = -EIO;
+		goto fail;
+	}
+
+	/* setup the super block ops */
+	sb->s_op = &jaguar_sops;
+
+	/* create the root dir inode of the fs */
+	root_inode = jaguar_iget(sb, 1);
+	if (IS_ERR(root_inode)) {
+		ERR("error allocating root inode\n");
+		ret = PTR_ERR(root_inode);
+		goto fail;
+	}
+
+	/* TODO: is this required? */
+	set_nlink(root_inode, 2);
+
+	/* setup the dentry of the root dir in super block */
+	sb->s_root = d_make_root(root_inode);
+	if (!sb->s_root) {
+		ERR("d_make_root failed\n");
+		goto fail;
+	}
+
+	return 0;
+
+fail:
+
+	return ret;
+}
+
+

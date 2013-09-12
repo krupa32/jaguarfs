@@ -36,8 +36,9 @@ struct jaguar_inode_on_disk
 {
 	int size;
 	int type;
+	int nlink;
 	unsigned int blocks[JAGUAR_INODE_NUM_BLOCK_ENTRIES];
-	char rsvd[60];
+	char rsvd[56];
 };
 
 struct jaguar_dentry_on_disk
@@ -63,13 +64,20 @@ struct jaguar_inode
 /*
  * Super block APIs
  */
-int jaguar_sb_read(struct super_block *sb); 
+int jaguar_fill_super(struct super_block *sb, void *data, int silent);
+
 
 /*
  * Inode APIs
  */
 struct inode * jaguar_iget(struct super_block *sb, int inum);
-int jaguar_inode_read(struct inode *i); 
+int write_inode_info(struct inode *i);
+
+/*
+ * Data block APIs
+ */
+int alloc_data_block(struct super_block *sb);
+int free_data_block(struct super_block *sb, int block);
 
 /*
  * Utility APIs

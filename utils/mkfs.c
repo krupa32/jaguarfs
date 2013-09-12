@@ -37,8 +37,9 @@ struct disk_inode
 {
 	int size;
 	int type;
+	int nlink;
 	unsigned int blocks[INODE_NUM_BLOCK_ENTRIES];
-	char rsvd[60];
+	char rsvd[56];
 };
 
 struct dentry
@@ -172,8 +173,9 @@ int write_inode_table(FILE *fp, struct super_block *sb)
 	struct disk_inode root_inode;
 
 	memset(&root_inode, 0, sizeof(root_inode));
-	root_inode.size = sizeof(struct dentry);
+	root_inode.size = sizeof(struct dentry) * 2; /* for . and .. */
 	root_inode.type = INODE_TYPE_DIR;
+	root_inode.nlink = 1;
 	root_inode.blocks[0] = sb->data_start / BLK_SIZE;
 
 	/* skip one disk inode, as there is no inode 0.
@@ -197,8 +199,12 @@ int write_data(FILE *fp, struct super_block *sb)
 
 	root_dentry = (struct dentry *)blkbuf;
 
+	/* write out a dentry for . and .. */
 	root_dentry->inode = 1; /* inum MUST start from 1 */
 	strcpy(root_dentry->name, ".");
+	root_dentry++;
+	root_dentry->inode = 1;
+	strcpy(root_dentry->name, "..");
 
 	fseek(fp, sb->data_start, SEEK_SET);
 	if (fwrite(blkbuf, BLK_SIZE, 1, fp) != 1) {

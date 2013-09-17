@@ -29,7 +29,6 @@ int alloc_data_block(struct super_block *sb)
 
 	/* read data bitmap from disk */
 	block = BYTES_TO_BLOCK(jsbd->data_bmap_start);
-	//DBG("alloc_data_block: reading data bmap from block %d\n", block);
 	if ((bh = __bread(sb->s_bdev, block, JAGUAR_BLOCK_SIZE)) == NULL) {
 		ERR("error reading data bmap from disk\n");
 		ret = -EIO;
@@ -40,7 +39,17 @@ int alloc_data_block(struct super_block *sb)
 	ret = (int)jaguar_find_first_zero_bit(bh->b_data, JAGUAR_BLOCK_SIZE);
 	jaguar_set_bit(bh->b_data, ret);
 	mark_buffer_dirty(bh);
+	brelse(bh);
 	DBG("alloc_data_block: found blk %d\n", ret);
+
+	/* zero out the allocated block */
+	if ((bh = __bread(sb->s_bdev, ret, JAGUAR_BLOCK_SIZE)) == NULL) {
+		ERR("error reading data block from disk\n");
+		ret = -EIO;
+		goto fail;
+	}
+	memset(bh->b_data, 0, JAGUAR_BLOCK_SIZE);
+	mark_buffer_dirty(bh);
 
 fail:
 	if (bh)

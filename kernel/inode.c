@@ -109,7 +109,7 @@ fail:
 static int alloc_inode(struct super_block *sb)
 {
 	int ret = -1;
-	int block;
+	int block, offset;
 	struct jaguar_super_block *jsb;
 	struct jaguar_super_block_on_disk *jsbd;
 	struct buffer_head *bh = NULL;
@@ -132,7 +132,6 @@ static int alloc_inode(struct super_block *sb)
 
 	/* read inode bitmap from disk */
 	block = BYTES_TO_BLOCK(jsbd->inode_bmap_start);
-	//DBG("alloc_inode: reading inode bmap from block %d\n", block);
 	if ((bh = __bread(sb->s_bdev, block, JAGUAR_BLOCK_SIZE)) == NULL) {
 		ERR("error reading inode bmap from disk\n");
 		ret = -EIO;
@@ -143,7 +142,19 @@ static int alloc_inode(struct super_block *sb)
 	ret = (int)jaguar_find_first_zero_bit(bh->b_data, JAGUAR_BLOCK_SIZE);
 	jaguar_set_bit(bh->b_data, ret);
 	mark_buffer_dirty(bh);
+	brelse(bh);
 	DBG("alloc_inode: found inum %d\n", ret);
+
+	/* zero out the allocated inode */
+	block = BYTES_TO_BLOCK(jsbd->inode_tbl_start);
+	if ((bh = __bread(sb->s_bdev, block, JAGUAR_BLOCK_SIZE)) == NULL) {
+		ERR("error reading inode table from disk\n");
+		ret = -EIO;
+		goto fail;
+	}
+	offset = ret * JAGUAR_INODE_SIZE;
+	memset(bh->b_data + offset, 0, JAGUAR_INODE_SIZE);
+	mark_buffer_dirty(bh);
 
 fail:
 	if (bh)
@@ -387,6 +398,7 @@ static int create_file_dir(struct inode *parent,
 
 	ji = (struct jaguar_inode *) i->i_private;
 	jid = &ji->disk_copy;
+	jid->size = 0;
 	jid->type = type;
 	jid->nlink = 1;
 

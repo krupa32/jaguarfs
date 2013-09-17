@@ -78,11 +78,10 @@ int write_inode_info(struct inode *i)
 	struct jaguar_inode *ji = (struct jaguar_inode *)i->i_private;
 	struct jaguar_inode_on_disk *jid = &ji->disk_copy;
 
-	DBG("write_inode_info: entering, inum=%d\n", (int)i->i_ino);
+	DBG("write_inode_info: entering, inum=%d, size=%d\n", (int)i->i_ino, (int)i->i_size);
 
 	/* update some dynamic fields on the disk copy */
 	jid->size = i->i_size;
-	jid->nlink = i->i_nlink;
 
 	/* calculate block and offset where inode is present */
 	block = BYTES_TO_BLOCK(jsb->disk_copy.inode_tbl_start) + INUM_TO_BLOCK(i->i_ino);
@@ -667,11 +666,12 @@ static int jaguar_get_block(struct inode *i, sector_t logical_block,
 		set_buffer_new(bh);
 
 	} else {
-		set_buffer_mapped(bh);
 	}
 
+	set_buffer_mapped(bh);
 	bh->b_bdev = i->i_sb->s_bdev;
 	bh->b_blocknr = block;
+	bh->b_size = JAGUAR_BLOCK_SIZE;
 	DBG("mapped logical block %d to phys block %d\n", 
 			(int)logical_block, block);
 

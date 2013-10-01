@@ -35,11 +35,13 @@ static int read_sb(struct super_block *sb)
 		goto fail;
 	}
 
-	memcpy(&jsb->disk_copy, bh->b_data, sizeof(jsb->disk_copy));
+	/* store the buffer head, it is never released until put_super.
+	 * point the disk_copy to point to the buffer head's data.
+	 */
+	jsb->bh = bh;
+	jsb->disk_copy = (struct jaguar_super_block_on_disk *) bh->b_data;
 
-	DBG("on disk: sb->name=%s\n", jsb->disk_copy.name);
-
-	brelse(bh);
+	DBG("on disk: sb->name=%s\n", jsb->disk_copy->name);
 
 	return 0;
 
@@ -54,11 +56,24 @@ static int jaguar_write_inode(struct inode *i, struct writeback_control *wbc)
 {
 	DBG("jaguar_write_inode: entering, inum=%d\n", (int)i->i_ino);
 
-	return write_inode_info(i);
+	return write_inode_to_disk(i);
+}
+
+static void jaguar_put_super(struct super_block *sb)
+{
+	struct jaguar_super_block *jsb;
+
+	DBG("jaguar_put_super: entering\n");
+
+	jsb = (struct jaguar_super_block *)sb->s_fs_info;
+
+	/* now release the buffer head of the super block */
+	brelse(jsb->bh);
 }
 
 const struct super_operations jaguar_sops = {
-	.write_inode		= jaguar_write_inode
+	.write_inode		= jaguar_write_inode,
+	.put_super		= jaguar_put_super
 };
 
 /* Supposed to fill the super block related information.

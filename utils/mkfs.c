@@ -31,6 +31,14 @@ struct super_block
 	int inode_tbl_start;
 	int inode_tbl_size;
 	int data_start;
+
+	int n_blocks;
+	int n_blocks_free;
+	int n_inodes;
+	int n_inodes_free;
+
+	int next_free_block;
+	int next_free_inode;
 };
 
 struct disk_inode
@@ -50,7 +58,7 @@ struct dentry
 
 int fill_super_block(struct super_block *sb, int disk_size)
 {
-	int max_inodes, max_blks;
+	int max_inodes, max_blks, metadata_size;
 	int data_bmap_size, inode_bmap_size, inode_tbl_size;
 
 	max_inodes = disk_size / 8192;
@@ -86,6 +94,17 @@ int fill_super_block(struct super_block *sb, int disk_size)
 
 	sb->data_start = sb->inode_tbl_start + sb->inode_tbl_size;
 	printf("data: start = %d\n", sb->data_start);
+
+	metadata_size = BLK_SIZE + data_bmap_size + inode_bmap_size + inode_tbl_size;
+	sb->n_blocks = max_blks;
+	sb->n_blocks_free = max_blks - (metadata_size / BLK_SIZE);
+	sb->next_free_block = metadata_size / BLK_SIZE;
+	printf("blocks: total = %d, free = %d, next = %d\n", sb->n_blocks, sb->n_blocks_free, sb->next_free_block);
+
+	sb->n_inodes = max_inodes;
+	sb->n_inodes_free = max_inodes - 2;
+	sb->next_free_inode = 2;
+	printf("inodes: total = %d, free = %d, next = %d\n", sb->n_inodes, sb->n_inodes_free, sb->next_free_inode);
 
 	return 0;
 }

@@ -8,34 +8,187 @@ int fill_inode(struct inode *i);
 
 static int logical_to_phys_block(struct inode *i, int logical_block)
 {
-	int index = logical_block, ret = 0;
+	int index, level, block, *block_map, block_index, ret = 0;
+	int max_blks_at_level[] = { 12, 1024, 1048576 };
 	struct jaguar_inode *ji = (struct jaguar_inode *)i->i_private;
+	struct super_block *sb = i->i_sb;
+	struct buffer_head *bh;
 
-	if (index < 12) {
+	//DBG("logical_to_phys_block: entering log=%d\n", logical_block);
+
+	index = logical_block;
+	level = 0;
+	while (index >= max_blks_at_level[level]) {
+		index -= max_blks_at_level[level];
+		level++;
+	}
+	//DBG("found level = %d, index = %d\n", level, index);
+
+	/* now index corresponds to index WITHIN that level of indirection.
+	 * ie, if logical block is 1040, level = 2, index = 4.
+	 */
+
+	/* handle the simplest case first: no indirection */
+	if (level == 0) {
 		ret = ji->disk_copy.blocks[index];
-	} else {
-		/* TODO: read from single, double, triple indirect
-		 * block, and find the phys block.
-		 */
+		goto out;
 	}
 
-	//DBG("logical_to_phys_block: mapped %d to %d\n", logical_block, ret);
+	/* check whether an indirect block is allocated for 'level' */
+	block = ji->disk_copy.blocks[11 + level];
+	if (!block)
+		goto out;
+
+	/* read the indirect block into mem */
+	if ((bh = __bread(sb->s_bdev, block, JAGUAR_BLOCK_SIZE)) == NULL) {
+		ERR("could not read indirect block\n");
+		goto out;
+	}
+
+	block_map = (int *)bh->b_data;
+
+	while (level > 1) {
+		
+		DBG("level %d: index=%d\n", level, index);
+
+		/* indirection level is more than 1.
+		 * find out the index of the block which has the next level
+		 * of indirect blocks.
+		 */
+		block_index = index / max_blks_at_level[level - 1];
+
+		/* find out the index of the block for the next level */
+		index = index % max_blks_at_level[level-1];
+
+		block = block_map[block_index];
+		if (!block)
+			goto out;
+
+		/* read the next level indirect block into mem */
+		brelse(bh);
+		if ((bh = __bread(sb->s_bdev, block, JAGUAR_BLOCK_SIZE)) == NULL) {
+			ERR("could not read indirect block\n");
+			goto out;
+		}
+
+		block_map = (int *)bh->b_data;
+
+		level--;
+	}
+
+	/* now we are at level 1 indirection */
+	ret = block_map[index];
+	brelse(bh);
+
+out:
+	DBG("logical_to_phys_block: mapped %d to %d\n", logical_block, ret);
 	return ret;
 }
 
+/* currently supports only levels 0, 1, 2 of indirection.
+ * triple indirect block not yet tested.
+ * shouldnt be difficult, though.
+ */
 static void update_inode_block_map(struct inode *i, int logical_block, int phys_block)
 {
-	int index = logical_block;
+	int index, level, save_inode, block, *block_map, block_index;
+	int max_blks_at_level[] = { 12, 1024, 1048576 };
 	struct jaguar_inode *ji = (struct jaguar_inode *)i->i_private;
+	struct super_block *sb = i->i_sb;
+	struct buffer_head *bh;
 
-	if (index < 12) {
-		ji->disk_copy.blocks[index] = phys_block;
-	} else {
-		/* TODO: update single, double or triple indirect blocks */
+	DBG("update_inode_block_map: entering log=%d, phys=%d\n", 
+		logical_block, phys_block);
+
+	index = logical_block;
+	level = 0;
+	while (index >= max_blks_at_level[level]) {
+		index -= max_blks_at_level[level];
+		level++;
 	}
+	DBG("found level = %d, index = %d\n", level, index);
+
+	/* now index corresponds to index WITHIN that level of indirection.
+	 * ie, if logical block is 1040, level = 2, index = 4.
+	 */
+
+	/* handle the simplest case first: no indirection */
+	if (level == 0) {
+		ji->disk_copy.blocks[index] = phys_block;
+		save_inode = 1;
+		goto out;
+	}
+
+	/* check whether an indirect block is allocated for 'level' */
+	block = ji->disk_copy.blocks[11 + level];
+	if (!block) {
+		if ((block = alloc_data_block(i->i_sb)) < 0) {
+			ERR("could not allocate data block\n");
+			goto fail;
+		}
+		ji->disk_copy.blocks[11 + level] = block;
+		save_inode = 1;
+		DBG("allocated blk %d for inode indirect blk\n", block);
+	}
+
+	/* read the indirect block into mem */
+	if ((bh = __bread(sb->s_bdev, block, JAGUAR_BLOCK_SIZE)) == NULL) {
+		ERR("could not read indirect block\n");
+		goto fail;
+	}
+
+	block_map = (int *)bh->b_data;
+
+	while (level > 1) {
+		
+		DBG("level %d: index=%d\n", level, index);
+
+		/* indirection level is more than 1.
+		 * find out the index of the block which has the next level
+		 * of indirect blocks.
+		 */
+		block_index = index / max_blks_at_level[level - 1];
+
+		/* find out the index of the block for the next level */
+		index = index % max_blks_at_level[level-1];
+
+		block = block_map[block_index];
+		if (!block) {
+			if ((block = alloc_data_block(i->i_sb)) < 0) {
+				ERR("could not allocate data block\n");
+				goto fail;
+			}
+			block_map[block_index] = block;
+			mark_buffer_dirty(bh);
+			DBG("allocated blk %d for indirect block\n", block);
+		}
+
+		/* read the next level indirect block into mem */
+		brelse(bh);
+		if ((bh = __bread(sb->s_bdev, block, JAGUAR_BLOCK_SIZE)) == NULL) {
+			ERR("could not read indirect block\n");
+			goto fail;
+		}
+
+		block_map = (int *)bh->b_data;
+
+		level--;
+	}
+
+	/* now we are at level 1 indirection */
+	block_map[index] = phys_block;
+	mark_buffer_dirty(bh);
+	brelse(bh);
+	DBG("updated level 1 index %d with phys block\n", index);
+
+out:
+	if (save_inode)
+		mark_inode_dirty(i);
+fail:
+	return;
 }
 
-static int read_inode_info(struct inode *i)
+static int read_inode_from_disk(struct inode *i)
 {
 	int block, offset, ret = 0;
 	struct buffer_head *bh = NULL;
@@ -45,10 +198,10 @@ static int read_inode_info(struct inode *i)
 	struct jaguar_inode *ji = (struct jaguar_inode *)i->i_private;
 	struct jaguar_inode_on_disk *jid = &ji->disk_copy;
 
-	DBG("read_inode_info: entering, inum=%d\n", (int)i->i_ino);
+	DBG("read_inode_from_disk: entering, inum=%d\n", (int)i->i_ino);
 
 	/* calculate block and offset where inode is present */
-	block = BYTES_TO_BLOCK(jsb->disk_copy.inode_tbl_start) + INUM_TO_BLOCK(i->i_ino);
+	block = BYTES_TO_BLOCK(jsb->disk_copy->inode_tbl_start) + INUM_TO_BLOCK(i->i_ino);
 	offset = INUM_TO_OFFSET(i->i_ino);
 	//DBG("block = %d, offset = %d\n", block, offset);
 
@@ -68,7 +221,7 @@ fail:
 	return ret;
 }
 
-int write_inode_info(struct inode *i)
+int write_inode_to_disk(struct inode *i)
 {
 	int block, offset, ret = 0;
 	struct buffer_head *bh = NULL;
@@ -78,13 +231,13 @@ int write_inode_info(struct inode *i)
 	struct jaguar_inode *ji = (struct jaguar_inode *)i->i_private;
 	struct jaguar_inode_on_disk *jid = &ji->disk_copy;
 
-	DBG("write_inode_info: entering, inum=%d, size=%d\n", (int)i->i_ino, (int)i->i_size);
+	DBG("write_inode_to_disk: entering, inum=%d, size=%d\n", (int)i->i_ino, (int)i->i_size);
 
 	/* update some dynamic fields on the disk copy */
 	jid->size = i->i_size;
 
 	/* calculate block and offset where inode is present */
-	block = BYTES_TO_BLOCK(jsb->disk_copy.inode_tbl_start) + INUM_TO_BLOCK(i->i_ino);
+	block = BYTES_TO_BLOCK(jsb->disk_copy->inode_tbl_start) + INUM_TO_BLOCK(i->i_ino);
 	offset = INUM_TO_OFFSET(i->i_ino);
 	//DBG("block = %d, offset = %d\n", block, offset);
 
@@ -108,53 +261,53 @@ fail:
 
 static int alloc_inode(struct super_block *sb)
 {
-	int ret = -1;
-	int block, offset;
+	int ret = -1, inum;
+	int block, start, offset, bmap_size, bmap_start;
 	struct jaguar_super_block *jsb;
 	struct jaguar_super_block_on_disk *jsbd;
 	struct buffer_head *bh = NULL;
 
 	jsb = sb->s_fs_info;
-	jsbd = &jsb->disk_copy;
+	jsbd = jsb->disk_copy;
 
-	/*
-	 * TODO The following code reads only one page of bmap.
-	 * It has to take care of condition where bmap can be of
-	 * multiple pages, in which case, the super block should track
-	 * the next free inum, which can be used as a hint to start reading
-	 * from the corresponding page, and then iterate through the pages
-	 * of the bmap.
-	 *
-	 * OR another idea is to forget about any optimization, and ALWAYS
-	 * read from the start of the bmap, iterate through the pages and
-	 * find a free inode.
-	 */
-
-	/* read inode bitmap from disk */
-	block = BYTES_TO_BLOCK(jsbd->inode_bmap_start);
-	if ((bh = __bread(sb->s_bdev, block, JAGUAR_BLOCK_SIZE)) == NULL) {
-		ERR("error reading inode bmap from disk\n");
-		ret = -EIO;
+	if (jsbd->n_inodes_free == 0) {
+		ERR("no more inodes available\n");
+		ret = -ENOMEM;
 		goto fail;
 	}
 
-	/* find the first zero bit, set it to 1 */
-	ret = (int)jaguar_find_first_zero_bit(bh->b_data, JAGUAR_BLOCK_SIZE);
-	jaguar_set_bit(bh->b_data, ret);
-	mark_buffer_dirty(bh);
-	brelse(bh);
-	DBG("alloc_inode: found inum %d\n", ret);
+	bmap_start = BYTES_TO_BLOCK(jsbd->inode_bmap_start);
+	bmap_size = BYTES_TO_BLOCK(jsbd->inode_bmap_size);
+	start = jsbd->next_free_inode / NUM_BITS_PER_BLOCK;
+
+	/* allocate an inode from the bitmap */
+	inum = jaguar_bmap_alloc_bit(sb->s_bdev, 
+		bmap_start, bmap_size, start);
+	if (inum < 0) {
+		ERR("could not alloc inum\n");
+		ret = -ENOMEM;
+		goto fail;
+	}
+	DBG("alloc_inode: found inum %d\n", inum);
+
+	/* update super block info */
+	jsbd->n_inodes_free--;
+	jsbd->next_free_inode = (inum + 1) % jsbd->n_inodes;
+	mark_buffer_dirty(jsb->bh);
 
 	/* zero out the allocated inode */
-	block = BYTES_TO_BLOCK(jsbd->inode_tbl_start);
+	block = BYTES_TO_BLOCK(jsbd->inode_tbl_start) +
+		(inum / JAGUAR_NUM_INODES_PER_BLOCK);
 	if ((bh = __bread(sb->s_bdev, block, JAGUAR_BLOCK_SIZE)) == NULL) {
 		ERR("error reading inode table from disk\n");
 		ret = -EIO;
 		goto fail;
 	}
-	offset = ret * JAGUAR_INODE_SIZE;
+	offset = (inum % JAGUAR_NUM_INODES_PER_BLOCK) * JAGUAR_INODE_SIZE;
 	memset(bh->b_data + offset, 0, JAGUAR_INODE_SIZE);
 	mark_buffer_dirty(bh);
+
+	ret = inum;
 
 fail:
 	if (bh)
@@ -165,48 +318,35 @@ fail:
 static int free_inode(struct inode *i)
 {
 	int ret = 0;
-	int block;
+	int bmap_start;
 	struct super_block *sb = i->i_sb;
 	struct jaguar_super_block *jsb;
 	struct jaguar_super_block_on_disk *jsbd;
-	struct buffer_head *bh = NULL;
 	struct jaguar_inode *ji = (struct jaguar_inode *) i->i_private;
 
 	jsb = sb->s_fs_info;
-	jsbd = &jsb->disk_copy;
+	jsbd = jsb->disk_copy;
+
+	bmap_start = BYTES_TO_BLOCK(jsbd->inode_bmap_start);
 
 	/* clear out the inode info on disk */
 	memset(&ji->disk_copy, 0, sizeof(ji->disk_copy));
-	if (write_inode_info(i)) {
-		ERR("error clearing out inode info on disk\n");
+	mark_inode_dirty(i);
+
+	/* update the inode bitmap */
+	ret = jaguar_bmap_free_bit(sb->s_bdev, bmap_start, i->i_ino);
+	if (ret < 0) {
+		ERR("error updating inode bitmap\n");
 		ret = -EIO;
 		goto fail;
 	}
+	DBG("free_inode: freed inode %d\n", (int)i->i_ino);
 
-
-	/*
-	 * TODO The following code reads only one page of bmap.
-	 * It has to take care of condition where bmap can be of
-	 * multiple pages
-	 */
-
-	/* read inode bitmap from disk */
-	block = BYTES_TO_BLOCK(jsbd->inode_bmap_start);
-	//DBG("free_inode: reading inode bmap from block %d\n", block);
-	if ((bh = __bread(sb->s_bdev, block, JAGUAR_BLOCK_SIZE)) == NULL) {
-		ERR("error reading inode bmap from disk\n");
-		ret = -EIO;
-		goto fail;
-	}
-
-	/* find the first zero bit, set it to 1 */
-	jaguar_clear_bit(bh->b_data, i->i_ino);
-	mark_buffer_dirty(bh);
-	DBG("free_inode: freed inum %d\n", (int)i->i_ino);
+	/* update super block info */
+	jsbd->n_inodes_free++;
+	mark_buffer_dirty(jsb->bh);
 
 fail:
-	if (bh)
-		brelse(bh);
 	return ret;
 }
 
@@ -304,13 +444,8 @@ static int write_inode_data(struct inode *i,
 		save_inode = 1;
 	}
 
-	if (save_inode) {
-		if (write_inode_info(i)) {
-			ERR("error writing inode info to disk\n");
-			ret = -EIO;
-			goto fail;
-		}
-	}
+	if (save_inode)
+		mark_inode_dirty(i);
 
 fail:
 	if (bh)
@@ -402,7 +537,11 @@ static int create_file_dir(struct inode *parent,
 	jid->type = type;
 	jid->nlink = 1;
 
-	if (write_inode_info(i)) {
+	/* the inode CANNOT be marked dirty here, because it is read from
+	 * disk again few lines below using fill_inode. so, the inode has
+	 * to be written to disk HERE.
+	 */
+	if (write_inode_to_disk(i)) {
 		ERR("error updating inode info\n");
 		ret = -EIO;
 		goto fail;
@@ -441,11 +580,7 @@ static int create_file_dir(struct inode *parent,
 	inode_inc_link_count(parent);
 	ji = (struct jaguar_inode *) parent->i_private;
 	ji->disk_copy.nlink++;
-	if (write_inode_info(parent)) {
-		ERR("error updating parent nlink\n");
-		ret = -EIO;
-		goto fail;
-	}
+	mark_inode_dirty(parent);
 
 	/* now that all disk data is updated, re-read the inode from
 	 * disk and update the in-core inode object
@@ -469,22 +604,35 @@ fail:
 
 }
 
+static int free_all_data_blocks(struct inode *inode)
+{
+	int n_blocks, ret = 0, block, i;
+
+	n_blocks = (inode->i_size + JAGUAR_BLOCK_SIZE - 1 ) / JAGUAR_BLOCK_SIZE;
+	DBG("free_all_data_blocks: freeing %d blocks\n", n_blocks);
+
+	for (i = 0; i < n_blocks; i++) {
+		block = logical_to_phys_block(inode, i);
+		ret = free_data_block(inode->i_sb, block);
+		if (ret)
+			break;
+	}
+
+	return ret;
+}
+
 static int unlink_file_dir(struct inode *parent, struct dentry *d)
 {
-	int block, ret = 0, pos;
+	int ret = 0, pos;
 	struct inode *i = d->d_inode;
 	struct jaguar_dentry_on_disk jd;
 	struct jaguar_inode *ji;
 
 	DBG("unlink_file_dir: entering: name=%s\n", d->d_name.name);
 
-	/* free the data blocks associated with inode
-	 * TODO: handle the case when there are multiple data blocks
-	 */
-	ji = (struct jaguar_inode *) i->i_private;
-	block = ji->disk_copy.blocks[0];
-	if (free_data_block(i->i_sb, block)) {
-		ERR("could not free dir inode data blocks\n");
+	/* free all data blocks associated with inode */
+	if (free_all_data_blocks(i)) {
+		ERR("could not free all data blocks on disk\n");
 		ret = -EIO;
 		goto fail;
 	}
@@ -525,11 +673,7 @@ static int unlink_file_dir(struct inode *parent, struct dentry *d)
 	inode_dec_link_count(parent);
 	ji = (struct jaguar_inode *) parent->i_private;
 	ji->disk_copy.nlink--;
-	if (write_inode_info(parent)) {
-		ERR("error updating parent nlink\n");
-		ret = -EIO;
-		goto fail;
-	}
+	mark_inode_dirty(parent);
 
 	/* decrement child's nlink. no need to update on disk, since
 	 * it has already been freed. but the decrement is required,
@@ -668,13 +812,6 @@ static int jaguar_get_block(struct inode *i, sector_t logical_block,
 		/* store the block in the inode */
 		update_inode_block_map(i, logical_block, block);
 
-		/* update the inode on disk */
-		if (write_inode_info(i)) {
-			ERR("error writing inode info to disk\n");
-			ret = -EIO;
-			goto fail;
-		}
-
 		set_buffer_new(bh);
 
 	} else {
@@ -752,7 +889,7 @@ int fill_inode(struct inode *i)
 	DBG("fill_inode: entering, inum=%d\n", (int)i->i_ino);
 
 	/* read the inode from disk */
-	if (read_inode_info(i)) {
+	if (read_inode_from_disk(i)) {
 		ERR("error reading inode info from disk\n");
 		ret = -EIO;
 		goto fail;

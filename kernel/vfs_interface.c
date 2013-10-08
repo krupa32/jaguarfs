@@ -16,10 +16,11 @@ static struct dentry *jaguar_mount(struct file_system_type *fs_type,
 
 
 static struct file_system_type jaguar_fs_type = {
-	.owner =	THIS_MODULE,
-	.name =		"jaguarfs",
-	.mount =	jaguar_mount,
-	.kill_sb =	kill_block_super,
+	.owner 		= THIS_MODULE,
+	.name 		= "jaguarfs",
+	.mount 		= jaguar_mount,
+	.kill_sb 	= kill_block_super,
+	.fs_flags	= FS_REQUIRES_DEV
 };
 
 

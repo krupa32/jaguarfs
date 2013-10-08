@@ -1,6 +1,7 @@
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
 #include <linux/slab.h>
+#include <linux/statfs.h>
 #include "jaguar.h"
 #include "debug.h"
 
@@ -20,13 +21,6 @@ static int read_sb(struct super_block *sb)
 	}
 
 	sb->s_fs_info = jsb;
-
-	/* set block size of super block AND the backing block dev */
-	if (!sb_set_blocksize(sb, JAGUAR_BLOCK_SIZE)) {
-		ERR("error setting block size\n");
-		ret = -EIO;
-		goto fail;
-	}
 
 	/* read the super block from the disk */
 	if ((bh = __bread(sb->s_bdev, 0, JAGUAR_BLOCK_SIZE)) == NULL) {
@@ -71,9 +65,38 @@ static void jaguar_put_super(struct super_block *sb)
 	brelse(jsb->bh);
 }
 
+static int jaguar_statfs(struct dentry *d, struct kstatfs *stat)
+{
+	struct super_block *sb = d->d_sb;
+	struct jaguar_super_block *jsb;
+	struct jaguar_super_block_on_disk *jsbd;
+	u64 id;
+
+	DBG("jaguar_statfs: entering\n");
+
+	jsb = (struct jaguar_super_block *)sb->s_fs_info;
+	jsbd = (struct jaguar_super_block_on_disk *)jsb->disk_copy;
+
+	id = huge_encode_dev(sb->s_bdev->bd_dev);
+
+	stat->f_type = JAGUAR_MAGIC;
+	stat->f_bsize = sb->s_blocksize;
+	stat->f_blocks = jsbd->n_blocks;
+	stat->f_bfree = jsbd->n_blocks_free;
+	stat->f_bavail = jsbd->n_blocks_free;
+	stat->f_files = jsbd->n_inodes;
+	stat->f_ffree = jsbd->n_inodes_free;
+	stat->f_namelen = strlen(jsbd->name);
+	stat->f_fsid.val[0] = (u32)id;
+	stat->f_fsid.val[1] = (u32)(id >> 32);
+
+	return 0;
+}
+
 const struct super_operations jaguar_sops = {
 	.write_inode		= jaguar_write_inode,
-	.put_super		= jaguar_put_super
+	.put_super		= jaguar_put_super,
+	.statfs			= jaguar_statfs
 };
 
 /* Supposed to fill the super block related information.
@@ -87,6 +110,13 @@ int jaguar_fill_super(struct super_block *sb, void *data, int silent)
 
 	DBG("jaguar_fill_super: entering\n");
 
+	/* set block size of super block AND the backing block dev */
+	if (!sb_set_blocksize(sb, JAGUAR_BLOCK_SIZE)) {
+		ERR("error setting block size\n");
+		ret = -EIO;
+		goto fail;
+	}
+
 	/* read the super block from disk */
 	if (read_sb(sb)) {
 		ERR("error reading super block from disk\n");
@@ -94,7 +124,8 @@ int jaguar_fill_super(struct super_block *sb, void *data, int silent)
 		goto fail;
 	}
 
-	/* setup the super block ops */
+	/* setup the super block magic and ops */
+	sb->s_magic = JAGUAR_MAGIC;
 	sb->s_op = &jaguar_sops;
 
 	/* create the root dir inode of the fs */

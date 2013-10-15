@@ -5,6 +5,7 @@
 #define JAGUAR_BLOCK_SIZE		4096
 #define JAGUAR_INODE_SIZE		128
 #define JAGUAR_INODE_NUM_BLOCK_ENTRIES	15
+#define JAGUAR_FILENAME_MAX		60
 
 #define BYTES_TO_BLOCK(b)		((b)/JAGUAR_BLOCK_SIZE)
 #define JAGUAR_NUM_INODES_PER_BLOCK	(JAGUAR_BLOCK_SIZE / JAGUAR_INODE_SIZE)
@@ -55,7 +56,7 @@ struct jaguar_inode_on_disk
 struct jaguar_dentry_on_disk
 {
 	unsigned int inum;
-	char name[28];
+	char name[JAGUAR_FILENAME_MAX];
 };
 
 /*

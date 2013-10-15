@@ -53,7 +53,7 @@ struct disk_inode
 struct dentry
 {
 	unsigned int inode;
-	char name[28];
+	char name[60];
 };
 
 int fill_super_block(struct super_block *sb, int disk_size)

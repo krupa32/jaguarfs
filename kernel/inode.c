@@ -569,6 +569,7 @@ static int create_file_dir(struct inode *parent,
 	 */
 	//DBG("new dentry at pos=%d\n", pos);
 	jd.inum = inum;
+	BUG_ON(strlen(d->d_name.name) >= JAGUAR_FILENAME_MAX);
 	strcpy(jd.name, d->d_name.name);
 	if (write_inode_data(parent, pos, sizeof(jd), &jd)) {
 		ERR("error writing out new dentry\n");
@@ -604,18 +605,75 @@ fail:
 
 }
 
+static int free_indirect_block(struct inode *inode, int block, int level)
+{
+	int ret = 0, i, *block_map;
+	struct super_block *sb = inode->i_sb;
+	struct buffer_head *bh = NULL;
+
+	DBG("free_indirect_block: entering, level=%d\n", level);
+
+	/* read the indirect block into mem */
+	if ((bh = __bread(sb->s_bdev, block, JAGUAR_BLOCK_SIZE)) == NULL) {
+		ERR("could not read indirect block\n");
+		ret = -EIO;
+		goto out;
+	}
+	block_map = (int *)bh->b_data;
+
+	for (i = 0; i < JAGUAR_BLOCK_SIZE / 4; i++) {
+		if (block_map[i] == 0)
+			continue;
+
+		if (level == 1)
+			ret = free_data_block(inode->i_sb, block_map[i]);
+		else
+			ret = free_indirect_block(inode, block_map[i], level-1);
+
+		if (ret)
+			goto out;
+	}
+	
+	/* all data blocks in lower levels have been freed.
+	 * now free this indirect block.
+	 */
+	ret = free_data_block(inode->i_sb, block);
+out:
+	if (bh)
+		brelse(bh);
+
+	return ret;
+}
+
 static int free_all_data_blocks(struct inode *inode)
 {
-	int n_blocks, ret = 0, block, i;
+	int n_blocks, ret = 0, block, i, n_blocks_freed = 0, level;
+	struct jaguar_inode *ji = (struct jaguar_inode *)inode->i_private;
+	int max_blks_at_level[] = { 12, 1024, 1048576 };
 
 	n_blocks = (inode->i_size + JAGUAR_BLOCK_SIZE - 1 ) / JAGUAR_BLOCK_SIZE;
 	DBG("free_all_data_blocks: freeing %d blocks\n", n_blocks);
 
-	for (i = 0; i < n_blocks; i++) {
-		block = logical_to_phys_block(inode, i);
-		ret = free_data_block(inode->i_sb, block);
+	i = 0;
+	while (n_blocks_freed < n_blocks) {
+
+		block = ji->disk_copy.blocks[i];
+		level = (i < 12) ? 0 : i - 11;
+
+		if (level == 0) {
+			/* direct block, simply free */
+			ret = free_data_block(inode->i_sb, block);
+			n_blocks_freed++;
+		} else {
+			/* indirect block, recursive free */
+			ret = free_indirect_block(inode, block, level);
+			n_blocks_freed += max_blks_at_level[level];
+		}
+
 		if (ret)
 			break;
+
+		i++;
 	}
 
 	return ret;

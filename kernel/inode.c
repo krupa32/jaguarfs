@@ -5,6 +5,7 @@
 #include "debug.h"
 
 int fill_inode(struct inode *i);
+long jaguar_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 
 static int logical_to_phys_block(struct inode *i, int logical_block)
 {
@@ -791,7 +792,7 @@ static int jaguar_rmdir(struct inode *parent, struct dentry *d)
 /* Supposed to find the inode corresponding to d->d_name.name, iget the
  * corresponding inode, and map the 'd' to the inode using d_add().
  */
-static struct dentry *jaguar_lookup(struct inode *parent, struct dentry *d, unsigned int flags)
+static struct dentry *jaguar_lookup(struct inode *parent, struct dentry *d, struct nameidata *data)
 {
 	int pos = 0, ret = 0;
 	struct jaguar_dentry_on_disk jd;
@@ -833,7 +834,7 @@ fail:
 
 
 static int jaguar_create(struct inode *parent, 
-		struct dentry *d, umode_t mode, bool excl)
+		struct dentry *d, umode_t mode, struct nameidata *data)
 {
 	DBG("jaguar_create: entering: name=%s\n", d->d_name.name);
 
@@ -927,7 +928,8 @@ static const struct file_operations jaguar_file_ops = {
 	.write		= do_sync_write,
 	.aio_read	= generic_file_aio_read,
 	.aio_write	= generic_file_aio_write,
-	.llseek		= generic_file_llseek
+	.llseek		= generic_file_llseek,
+	.unlocked_ioctl	= jaguar_ioctl
 };
 
 static const struct address_space_operations jaguar_aops = {

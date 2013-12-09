@@ -1,6 +1,8 @@
 #ifndef JAGUAR_H
 #define JAGUAR_H
 
+#include <linux/ioctl.h>
+
 #define JAGUAR_MAGIC			0x4a41 // JA
 #define JAGUAR_BLOCK_SIZE		4096
 #define JAGUAR_INODE_SIZE		128
@@ -16,6 +18,13 @@
 
 #define INODE_TYPE_FILE			1
 #define INODE_TYPE_DIR			2
+
+/* 
+ * ioctls
+ */
+#define JAGUAR_IOC_VERSION		_IO('f', 100)
+#define JAGUAR_IOC_UNVERSION		_IO('f', 101)
+
 
 /*
  * On-disk data structures.

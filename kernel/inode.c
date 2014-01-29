@@ -1,6 +1,9 @@
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
 #include <linux/slab.h>
+#include <linux/time.h>
+#include <linux/mount.h>
+#include <linux/highmem.h>
 #include "jaguar.h"
 #include "debug.h"
 
@@ -848,19 +851,136 @@ static int jaguar_unlink(struct inode *parent, struct dentry *d)
 	return unlink_file_dir(parent, d);
 }
 
+int alloc_version_meta_block(struct inode *i)
+{
+	int ret = 0, old_ver_meta_block;
+	struct super_block *sb;
+	struct jaguar_version_metadata *jvm = NULL;
+	struct jaguar_inode *ji;
+	struct jaguar_inode_on_disk *jid;
+
+	DBG("entering alloc_version_meta_block: inum=%d\n", (int)i->i_ino);
+
+	sb = i->i_sb;
+	ji = (struct jaguar_inode *) i->i_private;
+	jid = &ji->disk_copy;
+	
+	old_ver_meta_block = jid->ver_meta_block;
+
+	/* alloc a new data block for version metadata */
+	if ((jid->ver_meta_block = alloc_data_block(sb)) < 0) {
+		ERR("could not allocate data block\n");
+		return -ENOMEM;
+		goto fail;
+	}
+
+	DBG("allocated new version meta block %d\n", jid->ver_meta_block);
+
+	mark_inode_dirty(i);
+
+	/* get a buffer head for the new metadata block */
+	if ((ji->ver_meta_bh = __getblk(sb->s_bdev, jid->ver_meta_block, JAGUAR_BLOCK_SIZE)) == NULL) {
+		ERR("could not get buffer head\n");
+		return -ENOMEM;
+		goto fail;
+	}
+	set_buffer_uptodate(ji->ver_meta_bh);
+
+	/* init the version metadata block and write out to disk */
+	jvm = (struct jaguar_version_metadata *) ji->ver_meta_bh->b_data;
+	memset(jvm, 0, sizeof(*jvm));
+	jvm->next_block = old_ver_meta_block;
+	mark_buffer_dirty(ji->ver_meta_bh);
+	brelse(ji->ver_meta_bh);
+	ji->ver_meta_bh = NULL;
+
+	DBG("initialized version meta buffer on disk\n");
+
+fail:
+	return ret;
+}
+
+static void version(struct inode *i, int logical_block, char *data)
+{
+	struct buffer_head *ver_bh;
+	struct super_block *sb;
+	struct jaguar_version_metadata *jvm = NULL;
+	struct jaguar_version_metadata_entry *jvme;
+	struct jaguar_inode *ji;
+	int ver_block;
+	struct timeval tv;
+
+	DBG("version: entering: inum=%d, logical=%d\n",
+		(int)i->i_ino, logical_block);
+
+	sb = i->i_sb;
+
+	/* allocate a new version data block to store old data */
+	if ((ver_block = alloc_data_block(sb)) < 0) {
+		ERR("could not allocate version data block\n");
+		goto fail;
+	}
+
+	/* get buffer head for the version data block */
+	if ((ver_bh = __getblk(sb->s_bdev, ver_block, JAGUAR_BLOCK_SIZE)) == NULL) {
+		ERR("could not get buffer head for version block\n");
+		goto fail;
+	}
+	set_buffer_uptodate(ver_bh);
+
+	/* copy the original block data to version block */
+	memcpy(ver_bh->b_data, data, JAGUAR_BLOCK_SIZE);
+	mark_buffer_dirty(ver_bh);
+	brelse(ver_bh);
+
+	DBG("backed up inum %d logical block %d to version block %d\n", 
+		(int)i->i_ino, logical_block, ver_block);
+
+	/* update version metadata entry */
+	ji = (struct jaguar_inode *) i->i_private;
+	jvm = (struct jaguar_version_metadata *) ji->ver_meta_bh->b_data;
+	jvme = &jvm->entry[jvm->num_entries];
+	jvme->logical_block = logical_block;
+	jvme->version_block = ver_block;
+	do_gettimeofday(&tv);
+	jvme->timestamp = tv.tv_sec;
+	jvm->num_entries++;
+	DBG("added version entry [%d,%d,%d], num_entries=%d\n", 
+		logical_block, ver_block, (int)tv.tv_sec, jvm->num_entries);
+
+	if (jvm->num_entries == VERSION_METADATA_MAX_ENTRIES) {
+		mark_buffer_dirty(ji->ver_meta_bh);
+		brelse(ji->ver_meta_bh);
+		if (alloc_version_meta_block(i) < 0) {
+			ERR("error allocating version metadata block\n");
+			goto fail;
+		}
+	}
+
+fail:
+	return;
+}
+
 static int jaguar_get_block(struct inode *i, sector_t logical_block,
 		struct buffer_head *bh, int create)
 {
 	int block, ret = 0;
+	struct jaguar_inode *ji;
+	struct jaguar_inode_on_disk *jid;
 
 	DBG("jaguar_get_block: entering. inum=%d, block=%d, create=%d\n", (int)i->i_ino, (int)logical_block, create);
+
+	ji = (struct jaguar_inode *) i->i_private;
+	jid = &ji->disk_copy;
 
 	/* convert logical block to physical block.
 	 */
 	block = logical_to_phys_block(i, (int)logical_block);
 
-	/* if no block was allocated for this offset, allocate one now */
 	if (!block) {
+		/* no block was allocated for this offset.
+		 * allocate one now 
+		 */
 		block = alloc_data_block(i->i_sb);
 		if (block < 0) {
 			ERR("could not allocate data block\n");
@@ -874,6 +994,13 @@ static int jaguar_get_block(struct inode *i, sector_t logical_block,
 		set_buffer_new(bh);
 
 	} else {
+		/* this block was already allocated and probably has data.
+		 * if get_block is called for a write and the file is versioned, 
+		 * it has to be backed up.
+		 */
+		//if (create && jid->version_type == JAGUAR_KEEP_ALL) {
+		//	version(i, (int)logical_block, block);
+		//}
 	}
 
 	set_buffer_mapped(bh);
@@ -896,23 +1023,90 @@ static int jaguar_readpage(struct file *filp, struct page *page)
 
 static int jaguar_writepage(struct page *page, struct writeback_control *wbc)
 {
+	char *buf;
+
 	DBG("jaguar_writepage: entering\n");
+
+	buf = (char *)kmap(page);
+	DBG("page virt addr=0x%p, buf[0]=%c, inum=%d\n", buf, buf[0], (int)page->mapping->host->i_ino);
+	kunmap((void *)buf);
 
 	return block_write_full_page(page, jaguar_get_block, wbc);
 }
 
-static int jaguar_write_begin(struct file *file, struct address_space *mapping,
+static int jaguar_write_begin(struct file *filp, struct address_space *mapping,
 		loff_t pos, unsigned len, unsigned flags, 
 		struct page **pagep, void **fsdata)
 {
-	DBG("jaguar_write_begin: entering\n");
+	int ret, logical_block;
+	char *buf;
+	struct inode *i = filp->f_dentry->d_inode;
+	struct jaguar_inode *ji;
+	struct jaguar_inode_on_disk *jid;
 
-	return block_write_begin(mapping, pos, len, 
+	DBG("jaguar_write_begin: entering, pos=%d, len=%d\n", (int)pos, len);
+
+	ret = block_write_begin(mapping, pos, len, 
 			flags, pagep, jaguar_get_block);
+
+	ji = (struct jaguar_inode *) i->i_private;
+	jid = &ji->disk_copy;
+
+	if (jid->version_type == JAGUAR_KEEP_ALL) {
+		logical_block = pos / JAGUAR_BLOCK_SIZE;
+		buf = (char *)kmap(*pagep);
+		DBG("page virt addr=0x%p, buf[0]=%c, inum=%d\n", buf, buf[0], (int)(*pagep)->mapping->host->i_ino);
+		version(i, logical_block, buf);
+		kunmap((void *)buf);
+	}
+
+	return ret;
 }
 
 
+static int jaguar_open(struct inode *i, struct file *f)
+{
+	int ret = 0;
+	struct jaguar_inode *ji;
+	struct jaguar_inode_on_disk *jid;
+	struct super_block *sb;
 
+	sb = i->i_sb;
+	ji = (struct jaguar_inode *) i->i_private;
+	jid = (struct jaguar_inode_on_disk *) &ji->disk_copy;
+
+	DBG("entering jaguar_open: inum=%d\n", (int)i->i_ino);
+
+	if (jid->version_type != 0 && ji->ver_meta_bh == NULL) {
+		/* read the version meta block into a buffer */
+		if ((ji->ver_meta_bh = __bread(sb->s_bdev, jid->ver_meta_block, JAGUAR_BLOCK_SIZE)) == NULL) {
+			ERR("could not read version meta block\n");
+			return -ENOMEM;
+			goto fail;
+		}
+	}
+
+	//DBG("opening file %s, parent=%s\n", f->f_path.dentry->d_name.name, f->f_path.dentry->d_parent->d_name.name);
+	//DBG("mntroot=%s\n", f->f_path.mnt->mnt_root->d_name.name);
+
+fail:
+	return ret;
+}
+
+static int jaguar_release(struct inode *i, struct file *f)
+{
+	struct jaguar_inode *ji = (struct jaguar_inode *) i->i_private;
+
+	DBG("entering jaguar_release: inum=%d\n", (int)i->i_ino);
+
+	if (ji->ver_meta_bh) {
+		mark_buffer_dirty(ji->ver_meta_bh);
+		brelse(ji->ver_meta_bh);
+		ji->ver_meta_bh = NULL;
+	}
+
+	return 0;
+}
 
 static const struct inode_operations jaguar_inode_ops = {
 	.lookup		= jaguar_lookup,
@@ -929,7 +1123,9 @@ static const struct file_operations jaguar_file_ops = {
 	.aio_read	= generic_file_aio_read,
 	.aio_write	= generic_file_aio_write,
 	.llseek		= generic_file_llseek,
-	.unlocked_ioctl	= jaguar_ioctl
+	.unlocked_ioctl	= jaguar_ioctl,
+	.open		= jaguar_open,
+	.release	= jaguar_release
 };
 
 static const struct address_space_operations jaguar_aops = {

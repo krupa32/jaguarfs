@@ -41,6 +41,30 @@ err:
 	return ret;
 }
 
+static int unversion(const char *filename)
+{
+	int fd = -1, ret = -EINVAL;
+
+	if ((fd = open(filename, O_RDONLY)) < 0) {
+		ret = errno;
+		perror(NULL);
+		goto err;
+	}
+
+	if ((ret = ioctl(fd, JAGUAR_IOC_UNVERSION, NULL)) < 0) {
+		ret = errno;
+		perror(NULL);
+		goto err;
+	}
+
+err:
+	if (fd > 0)
+		close(fd);
+
+	return ret;
+}
+
+
 int main(int argc, char **argv)
 {
 	int opt, action, ret = -EINVAL;
@@ -65,10 +89,10 @@ int main(int argc, char **argv)
 
 	switch (action) {
 	case ACTION_VERSION:
-		printf("action=version, file=%s\n", argv[optind]);
 		ret = version(argv[optind]);
 		break;
 	case ACTION_UNVERSION:
+		ret = unversion(argv[optind]);
 		break;
 	}
 

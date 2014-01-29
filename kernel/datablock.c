@@ -40,11 +40,12 @@ int alloc_data_block(struct super_block *sb)
 	mark_buffer_dirty(jsb->bh);
 
 	/* zero out the allocated block */
-	if ((bh = __bread(sb->s_bdev, blknum, JAGUAR_BLOCK_SIZE)) == NULL) {
+	if ((bh = __getblk(sb->s_bdev, blknum, JAGUAR_BLOCK_SIZE)) == NULL) {
 		ERR("error reading data blk from disk\n");
 		ret = -EIO;
 		goto fail;
 	}
+	set_buffer_uptodate(bh);
 	memset(bh->b_data, 0, JAGUAR_BLOCK_SIZE);
 	mark_buffer_dirty(bh);
 

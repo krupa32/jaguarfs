@@ -19,12 +19,23 @@
 #define INODE_TYPE_FILE			1
 #define INODE_TYPE_DIR			2
 
+#define INODE_FLG_VERSIONED		0x1
+
 /* 
  * ioctls
  */
 #define JAGUAR_IOC_VERSION		_IO('f', 100)
 #define JAGUAR_IOC_UNVERSION		_IO('f', 101)
 
+/*
+ * version flags
+ */
+#define JAGUAR_KEEP_ALL			1
+#define JAGUAR_KEEP_SAFE_VERSIONS	2
+#define JAGUAR_KEEP_SAFE_TIME		3
+
+#define VERSION_METADATA_MAX_ENTRIES	340
+//#define VERSION_METADATA_MAX_ENTRIES	3
 
 /*
  * On-disk data structures.
@@ -59,13 +70,30 @@ struct jaguar_inode_on_disk
 	int type;
 	int nlink;
 	unsigned int blocks[JAGUAR_INODE_NUM_BLOCK_ENTRIES];
-	char rsvd[56];
+	int ver_meta_block;
+	int version_type;	/* one of JAGUAR_KEEP_xxx */
+	int version_param;	/* depends on version type */
+	char rsvd[44];
 };
 
 struct jaguar_dentry_on_disk
 {
 	unsigned int inum;
 	char name[JAGUAR_FILENAME_MAX];
+};
+
+struct jaguar_version_metadata
+{
+	int num_entries;
+	struct jaguar_version_metadata_entry
+	{
+		int logical_block;
+		int version_block;
+		int timestamp;
+	} entry[VERSION_METADATA_MAX_ENTRIES];
+
+	int next_block;
+	char rsvd[8];
 };
 
 /*
@@ -80,6 +108,9 @@ struct jaguar_super_block
 struct jaguar_inode
 {
 	struct jaguar_inode_on_disk disk_copy;
+	struct buffer_head *ver_meta_bh;
+	struct file *ver_filp;
+	char *ver_buf;
 };
 
 
@@ -100,6 +131,11 @@ int write_inode_to_disk(struct inode *i);
  */
 int alloc_data_block(struct super_block *sb);
 int free_data_block(struct super_block *sb, int block);
+
+/*
+ * Version metadata block APIs
+ */
+int alloc_version_meta_block(struct inode *i);
 
 /*
  * Utility APIs

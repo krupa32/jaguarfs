@@ -47,7 +47,10 @@ struct disk_inode
 	int type;
 	int nlink;
 	unsigned int blocks[INODE_NUM_BLOCK_ENTRIES];
-	char rsvd[56];
+	int ver_meta_block;
+	int version_type;
+	int version_param;
+	char rsvd[44];
 };
 
 struct dentry

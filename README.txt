@@ -17,7 +17,11 @@ o Inodes and super block buffers are marked dirty, and later synced
   by VFS. No synchronous writes done (unless otherwise required).
 o statfs done
 
+o version done for files
+o retrieve done for files
+o prune done for files
+
 
 TODO
 ----
-o Testing with FS benchmarks
+o version, retrieve, prune for directories

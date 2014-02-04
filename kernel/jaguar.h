@@ -24,8 +24,10 @@
 /* 
  * ioctls
  */
-#define JAGUAR_IOC_VERSION		_IO('f', 100)
+#define JAGUAR_IOC_VERSION		_IOW('f', 100, int)
 #define JAGUAR_IOC_UNVERSION		_IO('f', 101)
+#define JAGUAR_IOC_RETRIEVE		_IOWR('f', 102, int)
+#define JAGUAR_IOC_PRUNE		_IO('f', 103)
 
 /*
  * version flags
@@ -34,8 +36,8 @@
 #define JAGUAR_KEEP_SAFE_VERSIONS	2
 #define JAGUAR_KEEP_SAFE_TIME		3
 
-#define VERSION_METADATA_MAX_ENTRIES	340
-//#define VERSION_METADATA_MAX_ENTRIES	3
+//#define VERSION_METADATA_MAX_ENTRIES	340
+#define VERSION_METADATA_MAX_ENTRIES	3
 
 /*
  * On-disk data structures.
@@ -85,6 +87,7 @@ struct jaguar_dentry_on_disk
 struct jaguar_version_metadata
 {
 	int num_entries;
+	int start_entry;
 	struct jaguar_version_metadata_entry
 	{
 		int logical_block;
@@ -93,7 +96,7 @@ struct jaguar_version_metadata
 	} entry[VERSION_METADATA_MAX_ENTRIES];
 
 	int next_block;
-	char rsvd[8];
+	char rsvd[4];
 };
 
 /*
@@ -146,5 +149,12 @@ void jaguar_clear_bit(void *bmap, int pos);
 int jaguar_bmap_alloc_bit(struct block_device *bdev,
 	int bmap_start, int bmap_size, int start);
 int jaguar_bmap_free_bit(struct block_device *bdev, int bmap_start, int bit);
+
+/*
+ * Versioning APIs
+ */
+int retrieve(struct file *filp, int logical_block, int at, char __user *data);
+int prune(struct file *filp);
+
 
 #endif // JAGUAR_H

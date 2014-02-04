@@ -961,6 +961,253 @@ fail:
 	return;
 }
 
+int retrieve(struct file *filp, int logical_block, int at, char __user *data)
+{
+	struct jaguar_version_metadata *jvm = NULL;
+	struct jaguar_version_metadata_entry *jvme;
+	struct jaguar_inode *ji;
+	struct jaguar_inode_on_disk *jid;
+	struct buffer_head *ver_meta_bh, *bh;
+	int ver_block = 0, done = 0, j, len, next_block = 0;
+	struct inode *i;
+	struct super_block *sb;
+	loff_t pos;
+
+	i = filp->f_dentry->d_inode;
+	sb = i->i_sb;
+	ji = (struct jaguar_inode *) i->i_private;
+	jid = &ji->disk_copy;
+	ver_meta_bh = ji->ver_meta_bh;
+
+	DBG("retrieve: inum=%d, logical=%d, at=%d\n", (int)i->i_ino, logical_block, at);
+
+	if (jid->version_type == 0)
+		return -EINVAL;
+
+	while (!done) {
+
+		jvm = (struct jaguar_version_metadata *) ver_meta_bh->b_data;
+		jvme = &jvm->entry[jvm->num_entries - 1];
+
+		/* go through current meta data block */
+		for (j = jvm->num_entries - 1; j >= jvm->start_entry; j--) {
+
+			DBG("checking version entry logical=%d, ts=%d\n", jvme->logical_block, jvme->timestamp);
+
+			if (jvme->logical_block != logical_block)
+				continue;
+
+			if (jvme->timestamp < at) {
+				/* found a version timestamp less than 'at'.
+				 * the version block corresponding to least
+				 * timestamp greater than 'at' is stored in
+				 * ver_block.
+				 */
+				done = 1;
+				break;
+			} else {
+				/* this timestamp is greater than 'at'.
+				 * so track it.
+				 */
+				ver_block = jvme->version_block;
+			}
+
+			jvme--;
+		}
+
+		next_block = jvm->next_block;
+
+		/* brelse the ver_meta_bh. but ji->ver_meta_bh which was 
+		 * already existing, and being used, need not be brelse'ed.
+		 */
+		if (ver_meta_bh && ver_meta_bh != ji->ver_meta_bh) {
+			brelse(ver_meta_bh);
+			ver_meta_bh = NULL;
+		}
+
+		if (!done) {
+			/* no suitable version entry was found in
+			 * current block, so check the next_block.
+			 */
+			if (next_block) {
+				/* read the next version meta block into a buffer */
+				DBG("reading next version meta block %d\n", next_block);
+				if ((ver_meta_bh = __bread(sb->s_bdev, next_block, JAGUAR_BLOCK_SIZE)) == NULL) {
+					ERR("could not read version meta block\n");
+					goto fail;
+				}
+			} else {
+				/* no more version meta blocks to look */
+				DBG("no more version meta blocks\n");
+				done = 1;
+			}
+		}
+	}
+
+	if (ver_block == 0) {
+		/* no version block was found.
+		 * return the latest data from the file.
+		 * since the latest data might be on page cache,
+		 * and NOT updated on disk, we MUST use vfs_read.
+		 */
+		DBG("no version data block, returning latest data\n");
+		pos = logical_block * JAGUAR_BLOCK_SIZE;
+		return vfs_read(filp, data, JAGUAR_BLOCK_SIZE, &pos);
+	}
+
+	DBG("found version data block %d\n", ver_block);
+
+	/* a proper version block was found. read it and copy the contents
+	 * into the user space buffer passed.
+	 */
+	if ((bh = __bread(sb->s_bdev, ver_block, JAGUAR_BLOCK_SIZE)) == NULL) {
+		ERR("could not read version data block\n");
+		goto fail;
+	}
+
+	__copy_to_user(data, bh->b_data, JAGUAR_BLOCK_SIZE);
+
+	brelse(bh);
+
+	if ((logical_block+1)*JAGUAR_BLOCK_SIZE <= i->i_size)
+		len = JAGUAR_BLOCK_SIZE;
+	else
+		len = i->i_size - (logical_block*JAGUAR_BLOCK_SIZE);
+
+
+	return len;
+
+fail:
+	return -ENOENT;
+}
+
+
+int prune(struct file *filp)
+{
+	struct jaguar_version_metadata *jvm = NULL;
+	struct jaguar_version_metadata_entry *jvme;
+	struct jaguar_inode *ji;
+	struct jaguar_inode_on_disk *jid;
+	struct buffer_head *ver_meta_bh;
+	int done = 0, j, pruning = 0, now, num_versions = 0, start_entry;
+	int cur_meta_block, next_meta_block, free_meta_block = 0;
+	struct inode *i;
+	struct super_block *sb;
+	struct timeval tv;
+
+	i = filp->f_dentry->d_inode;
+	sb = i->i_sb;
+	ji = (struct jaguar_inode *) i->i_private;
+	jid = &ji->disk_copy;
+	ver_meta_bh = ji->ver_meta_bh;
+	do_gettimeofday(&tv);
+	now = tv.tv_sec;
+
+	DBG("prune: entering inum=%d, ver type=%d, param=%d\n", (int)i->i_ino, jid->version_type, jid->version_param);
+
+	if (jid->version_type == 0)
+		return -EINVAL;
+	
+	if (jid->version_type == JAGUAR_KEEP_ALL)
+		return 0;
+
+	while (!done) {
+
+		jvm = (struct jaguar_version_metadata *) ver_meta_bh->b_data;
+		jvme = &jvm->entry[jvm->num_entries - 1];
+
+		/* go through current meta data block */
+		start_entry = jvm->start_entry;
+		for (j = jvm->num_entries - 1; j >= start_entry; j--) {
+
+			DBG("scanning version %d ts=%d\n", num_versions, jvme->timestamp);
+			if (jid->version_type == JAGUAR_KEEP_SAFE_VERSIONS &&
+			    num_versions < jid->version_param) {
+
+				/* this entry should not be pruned */
+				num_versions++;
+
+			} else if (jid->version_type == JAGUAR_KEEP_SAFE_TIME &&
+				   jvme->timestamp >= (now - jid->version_param)) {
+
+				/* this entry should not be pruned */
+
+			} else {
+				DBG("pruning entry\n");
+				/* this entry should be pruned.
+				 * free the version data block
+				 */
+				free_data_block(sb, jvme->version_block);
+				
+				/* update the start entry for this version
+				 * block. note that this should happen only
+				 * once, so a flag is used.
+				 */
+				if (!pruning) {
+					jvm->start_entry = j + 1;
+					mark_buffer_dirty(ver_meta_bh);
+					pruning = 1;
+					DBG("start entry updated to %d\n", j+1);
+				}
+			}
+
+			jvme--;
+
+		}
+
+		next_meta_block = jvm->next_block;
+
+		/* if pruning, all entries in this meta block are
+		 * pruned. set next_block as 0, and continue pruning
+		 */
+		if (pruning && jvm->next_block) {
+			jvm->next_block = 0;
+			mark_buffer_dirty(ver_meta_bh);
+		}
+		
+		/* brelse the ver_meta_bh. but ji->ver_meta_bh which was 
+		 * already existing, and being used, need not be brelse'ed.
+		 */
+		if (ver_meta_bh && ver_meta_bh != ji->ver_meta_bh) {
+			brelse(ver_meta_bh);
+			ver_meta_bh = NULL;
+		}
+
+		if (free_meta_block) {
+			DBG("freeing meta block %d\n", cur_meta_block);
+			free_data_block(sb, cur_meta_block);
+		}
+
+		if (next_meta_block) {
+
+			cur_meta_block = next_meta_block;
+
+			/* if already in pruning mode, and moving to next
+			 * block, then we can start freeing the ver meta
+			 * block from next iteration.
+			 */
+			if (pruning)
+				free_meta_block = 1;
+
+			/* read the next version meta block into a buffer */
+			DBG("reading next version meta block %d\n", cur_meta_block);
+			if ((ver_meta_bh = __bread(sb->s_bdev, cur_meta_block, JAGUAR_BLOCK_SIZE)) == NULL) {
+				ERR("could not read version meta block\n");
+				goto fail;
+			}
+		} else {
+			/* no more version meta blocks to look */
+			DBG("no more version meta blocks\n");
+			done = 1;
+		}
+
+	}
+
+fail:
+	return 0;
+}
+
+
 static int jaguar_get_block(struct inode *i, sector_t logical_block,
 		struct buffer_head *bh, int create)
 {
@@ -1052,7 +1299,7 @@ static int jaguar_write_begin(struct file *filp, struct address_space *mapping,
 	ji = (struct jaguar_inode *) i->i_private;
 	jid = &ji->disk_copy;
 
-	if (jid->version_type == JAGUAR_KEEP_ALL) {
+	if (jid->version_type != 0) {
 		logical_block = pos / JAGUAR_BLOCK_SIZE;
 		buf = (char *)kmap(*pagep);
 		DBG("page virt addr=0x%p, buf[0]=%c, inum=%d\n", buf, buf[0], (int)(*pagep)->mapping->host->i_ino);
@@ -1203,4 +1450,6 @@ fail:
 
 	return NULL;
 }
+
+
 

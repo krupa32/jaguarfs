@@ -4,11 +4,15 @@
 #include <linux/time.h>
 #include <linux/mount.h>
 #include <linux/highmem.h>
+#include <asm/uaccess.h>
 #include "jaguar.h"
 #include "debug.h"
 
 int fill_inode(struct inode *i);
 long jaguar_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+static void version(struct inode *i, int logical_block, char *data);
+static int jaguar_open(struct inode *i, struct file *f);
+static int jaguar_release(struct inode *i, struct file *f);
 
 static int logical_to_phys_block(struct inode *i, int logical_block)
 {
@@ -435,6 +439,18 @@ static int write_inode_data(struct inode *i,
 		goto fail;
 	}
 
+	/* if dir inode is versioned, then take a copy before modifying */
+	if (jid->version_type != 0) {
+		/* note: when a file/dir is created, the parent dir is
+		 * NOT opened, and hence the ver_meta_bh is never loaded.
+		 * so we manually do a open, release to make sure the
+		 * ver_meta_bh is loaded.
+		 */
+		jaguar_open(i, NULL);
+		version(i, logical_block, bh->b_data);
+		jaguar_release(i, NULL);
+	}
+
 	/* copy the data to be written at offset in buffer,
 	 * and mark buffer dirty
 	 */
@@ -514,8 +530,9 @@ static int create_file_dir(struct inode *parent,
 	int inum, ret = 0, pos;
 	struct inode *i;
 	struct jaguar_dentry_on_disk jd;
-	struct jaguar_inode *ji;
-	struct jaguar_inode_on_disk *jid;
+	struct jaguar_inode *ji, *ji_parent;
+	struct jaguar_inode_on_disk *jid, *jid_parent;
+	struct version_info vinfo;
 
 	DBG("create_file_dir: entering: name=%s, type=%d\n", 
 			d->d_name.name, type);
@@ -541,6 +558,15 @@ static int create_file_dir(struct inode *parent,
 	jid->type = type;
 	jid->nlink = 1;
 
+	/* if parent dir was versioned, set it on child too */
+	ji_parent = (struct jaguar_inode *) parent->i_private;
+	jid_parent = &ji_parent->disk_copy;
+	if (jid_parent->version_type != 0) {
+		vinfo.type = jid_parent->version_type;
+		vinfo.param = jid_parent->version_param;
+		set_version(i, &vinfo);
+	}
+	
 	/* the inode CANNOT be marked dirty here, because it is read from
 	 * disk again few lines below using fill_inode. so, the inode has
 	 * to be written to disk HERE.
@@ -936,8 +962,13 @@ static void version(struct inode *i, int logical_block, char *data)
 	DBG("backed up inum %d logical block %d to version block %d\n", 
 		(int)i->i_ino, logical_block, ver_block);
 
+
 	/* update version metadata entry */
 	ji = (struct jaguar_inode *) i->i_private;
+	if (ji->ver_meta_bh == NULL) {
+		DBG("error: ver_meta_bh is NULL\n");
+		return;
+	}
 	jvm = (struct jaguar_version_metadata *) ji->ver_meta_bh->b_data;
 	jvme = &jvm->entry[jvm->num_entries];
 	jvme->logical_block = logical_block;
@@ -968,10 +999,11 @@ int retrieve(struct file *filp, int logical_block, int at, char __user *data)
 	struct jaguar_inode *ji;
 	struct jaguar_inode_on_disk *jid;
 	struct buffer_head *ver_meta_bh, *bh;
-	int ver_block = 0, done = 0, j, len, next_block = 0;
+	int ver_block = 0, done = 0, j, len, next_block = 0, ret;
 	struct inode *i;
 	struct super_block *sb;
 	loff_t pos;
+	char *kdata;
 
 	i = filp->f_dentry->d_inode;
 	sb = i->i_sb;
@@ -1052,7 +1084,15 @@ int retrieve(struct file *filp, int logical_block, int at, char __user *data)
 		 */
 		DBG("no version data block, returning latest data\n");
 		pos = logical_block * JAGUAR_BLOCK_SIZE;
-		return vfs_read(filp, data, JAGUAR_BLOCK_SIZE, &pos);
+		if (jid->type == INODE_TYPE_FILE) {
+			return vfs_read(filp, data, JAGUAR_BLOCK_SIZE, &pos);
+		} else {
+			kdata = kmalloc(JAGUAR_BLOCK_SIZE, GFP_KERNEL);
+			ret = read_inode_data(i, (int)pos, JAGUAR_BLOCK_SIZE, kdata);
+			__copy_to_user(data, kdata, JAGUAR_BLOCK_SIZE);
+			kfree(kdata);
+			return (ret == 0) ? JAGUAR_BLOCK_SIZE: ret;
+		}
 	}
 
 	DBG("found version data block %d\n", ver_block);
@@ -1215,7 +1255,8 @@ static int jaguar_get_block(struct inode *i, sector_t logical_block,
 	struct jaguar_inode *ji;
 	struct jaguar_inode_on_disk *jid;
 
-	DBG("jaguar_get_block: entering. inum=%d, block=%d, create=%d\n", (int)i->i_ino, (int)logical_block, create);
+	DBG("jaguar_get_block: entering. inum=%d, block=%d, create=%d\n", 
+		(int)i->i_ino, (int)logical_block, create);
 
 	ji = (struct jaguar_inode *) i->i_private;
 	jid = &ji->disk_copy;
@@ -1239,15 +1280,6 @@ static int jaguar_get_block(struct inode *i, sector_t logical_block,
 		update_inode_block_map(i, logical_block, block);
 
 		set_buffer_new(bh);
-
-	} else {
-		/* this block was already allocated and probably has data.
-		 * if get_block is called for a write and the file is versioned, 
-		 * it has to be backed up.
-		 */
-		//if (create && jid->version_type == JAGUAR_KEEP_ALL) {
-		//	version(i, (int)logical_block, block);
-		//}
 	}
 
 	set_buffer_mapped(bh);
@@ -1270,13 +1302,7 @@ static int jaguar_readpage(struct file *filp, struct page *page)
 
 static int jaguar_writepage(struct page *page, struct writeback_control *wbc)
 {
-	char *buf;
-
 	DBG("jaguar_writepage: entering\n");
-
-	buf = (char *)kmap(page);
-	DBG("page virt addr=0x%p, buf[0]=%c, inum=%d\n", buf, buf[0], (int)page->mapping->host->i_ino);
-	kunmap((void *)buf);
 
 	return block_write_full_page(page, jaguar_get_block, wbc);
 }
@@ -1285,42 +1311,34 @@ static int jaguar_write_begin(struct file *filp, struct address_space *mapping,
 		loff_t pos, unsigned len, unsigned flags, 
 		struct page **pagep, void **fsdata)
 {
-	int ret, logical_block;
-	char *buf;
-	struct inode *i = filp->f_dentry->d_inode;
-	struct jaguar_inode *ji;
-	struct jaguar_inode_on_disk *jid;
-
 	DBG("jaguar_write_begin: entering, pos=%d, len=%d\n", (int)pos, len);
 
-	ret = block_write_begin(mapping, pos, len, 
+	return block_write_begin(mapping, pos, len, 
 			flags, pagep, jaguar_get_block);
-
-	ji = (struct jaguar_inode *) i->i_private;
-	jid = &ji->disk_copy;
-
-	if (jid->version_type != 0) {
-		logical_block = pos / JAGUAR_BLOCK_SIZE;
-		buf = (char *)kmap(*pagep);
-		DBG("page virt addr=0x%p, buf[0]=%c, inum=%d\n", buf, buf[0], (int)(*pagep)->mapping->host->i_ino);
-		version(i, logical_block, buf);
-		kunmap((void *)buf);
-	}
-
-	return ret;
 }
 
+static int jaguar_write_end(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned copied,
+			struct page *page, void *fsdata)
+{
+
+	DBG("jaguar_write_end: entering, pos=%d, len=%d, copied=%d\n", (int)pos, len, copied);
+
+	return generic_write_end(file, mapping, pos, len, copied, page, fsdata);
+}
 
 static int jaguar_open(struct inode *i, struct file *f)
 {
-	int ret = 0;
+	int ret = 0, logical_block;
 	struct jaguar_inode *ji;
 	struct jaguar_inode_on_disk *jid;
 	struct super_block *sb;
+	loff_t readpos;
+	mm_segment_t oldfs;
 
 	sb = i->i_sb;
 	ji = (struct jaguar_inode *) i->i_private;
-	jid = (struct jaguar_inode_on_disk *) &ji->disk_copy;
+	jid = &ji->disk_copy;
 
 	DBG("entering jaguar_open: inum=%d\n", (int)i->i_ino);
 
@@ -1328,13 +1346,41 @@ static int jaguar_open(struct inode *i, struct file *f)
 		/* read the version meta block into a buffer */
 		if ((ji->ver_meta_bh = __bread(sb->s_bdev, jid->ver_meta_block, JAGUAR_BLOCK_SIZE)) == NULL) {
 			ERR("could not read version meta block\n");
-			return -ENOMEM;
+			ret = -ENOMEM;
+			goto fail;
+		}
+
+		/* allocate a buffer to hold data that is to be versioned */
+		if ((ji->ver_data_buf = kmalloc(JAGUAR_BLOCK_SIZE, GFP_KERNEL)) == NULL) {
+			ERR("could not allocated version data buffer\n");
+			ret = -ENOMEM;
 			goto fail;
 		}
 	}
 
-	//DBG("opening file %s, parent=%s\n", f->f_path.dentry->d_name.name, f->f_path.dentry->d_parent->d_name.name);
-	//DBG("mntroot=%s\n", f->f_path.mnt->mnt_root->d_name.name);
+	/* IMPORTANT: if O_TRUNC is set, then all page cache pages for this
+	 * file are freed immediately after the file is opened. the file's
+	 * data should be backed up in jaguar_open() itself.
+	 */
+	if (jid->version_type != 0 && f && (f->f_flags & O_TRUNC)) {
+		DBG("O_TRUNC is set, backing up all file data\n");
+		logical_block = 0;
+		readpos = 0;
+		while (1) {
+			oldfs = get_fs();
+			set_fs(KERNEL_DS);
+			ret = do_sync_read(f, ji->ver_data_buf, JAGUAR_BLOCK_SIZE, &readpos);
+			set_fs(oldfs);
+			DBG("do_sync_read returned %d, buf[0] = %c\n", ret, ji->ver_data_buf[0]);
+			if (ret > 0)
+				version(i, logical_block, ji->ver_data_buf);
+			if (ret < JAGUAR_BLOCK_SIZE)
+				break;
+			logical_block++;
+		}
+	}
+
+	return 0;
 
 fail:
 	return ret;
@@ -1352,7 +1398,50 @@ static int jaguar_release(struct inode *i, struct file *f)
 		ji->ver_meta_bh = NULL;
 	}
 
+	if (ji->ver_data_buf) {
+		kfree(ji->ver_data_buf);
+		ji->ver_data_buf = NULL;
+	}
+
 	return 0;
+}
+
+ssize_t jaguar_write(struct file *filp, const char __user *buf, size_t len, loff_t *pos)
+{
+	int ret, logical_block;
+	loff_t readpos;
+	mm_segment_t oldfs;
+	struct inode *i;
+	struct jaguar_inode *ji;
+	struct jaguar_inode_on_disk *jid;
+
+	DBG("jaguar_write: entering\n");
+
+	i = filp->f_dentry->d_inode;
+	ji = (struct jaguar_inode *) i->i_private;
+	jid = &ji->disk_copy;
+
+	/* IMPORTANT: if O_TRUNC is set, then all page cache pages for this
+	 * file are freed immediately after the file is opened. the file's
+	 * data would have been backed up in jaguar_open() itself.
+	 * also, after freeing the pages, VFS resets the O_TRUNC flag.
+	 * so when it comes here, only O_WRONLY flag is set.
+	 * the only way to handle this case is to check the return value
+	 * of do_sync_read(). if it is 0, then file was truncated.
+	 */
+	if (jid->version_type != 0) {
+		logical_block = *pos / JAGUAR_BLOCK_SIZE;
+		readpos = logical_block * JAGUAR_BLOCK_SIZE;
+		oldfs = get_fs();
+		set_fs(KERNEL_DS);
+		ret = do_sync_read(filp, ji->ver_data_buf, JAGUAR_BLOCK_SIZE, &readpos);
+		set_fs(oldfs);
+		DBG("do_sync_read returned %d, buf[0]=%c\n", ret, ji->ver_data_buf[0]);
+		if (ret > 0)
+			version(i, logical_block, ji->ver_data_buf);
+	}
+
+	return do_sync_write(filp, buf, len, pos);
 }
 
 static const struct inode_operations jaguar_inode_ops = {
@@ -1366,7 +1455,7 @@ static const struct inode_operations jaguar_inode_ops = {
 static const struct file_operations jaguar_file_ops = {
 	.readdir	= jaguar_readdir,
 	.read		= do_sync_read,
-	.write		= do_sync_write,
+	.write		= jaguar_write,
 	.aio_read	= generic_file_aio_read,
 	.aio_write	= generic_file_aio_write,
 	.llseek		= generic_file_llseek,
@@ -1379,7 +1468,7 @@ static const struct address_space_operations jaguar_aops = {
 	.readpage	= jaguar_readpage,
 	.writepage	= jaguar_writepage,
 	.write_begin	= jaguar_write_begin,
-	.write_end	= generic_write_end
+	.write_end	= jaguar_write_end
 };
 
 /* Reads a disk inode with number i->i_ino, and fills 'i' with the info.
@@ -1452,4 +1541,47 @@ fail:
 }
 
 
+int set_version(struct inode *i, struct version_info *info)
+{
+	int ret = 0;
+	struct jaguar_inode *ji;
+	struct jaguar_inode_on_disk *jid;
 
+	DBG("set_version: entering, inum=%d\n", (int)i->i_ino);
+
+	/* mark the inode as versioned */
+	ji = (struct jaguar_inode *) i->i_private;
+	ji->ver_meta_bh = NULL;
+	jid = &ji->disk_copy;
+	jid->version_type = info->type;
+	jid->version_param = info->param;
+
+	if (jid->ver_meta_block == 0) {
+		if ((ret = alloc_version_meta_block(i)) < 0) {
+			ERR("error allocating version meta block\n");
+			goto fail;
+		}
+	}
+
+	mark_inode_dirty(i);
+
+fail:
+	return ret;
+}
+
+int reset_version(struct inode *i)
+{
+	struct jaguar_inode *ji;
+	struct jaguar_inode_on_disk *jid;
+
+	DBG("reset_version: entering, inum=%d\n", (int)i->i_ino);
+
+	ji = (struct jaguar_inode *) i->i_private;
+	jid = &ji->disk_copy;
+	jid->version_type = 0;
+	jid->version_param = 0;
+	jid->ver_meta_block = 0;
+	mark_inode_dirty(i);
+
+	return 0;
+}

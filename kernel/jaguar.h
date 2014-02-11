@@ -112,9 +112,22 @@ struct jaguar_inode
 {
 	struct jaguar_inode_on_disk disk_copy;
 	struct buffer_head *ver_meta_bh;
-	struct file *ver_filp;
-	char *ver_buf;
+	char *ver_data_buf;
 };
+
+struct version_buffer 
+{
+	int offset;
+	int at;
+	char data[JAGUAR_BLOCK_SIZE];
+};
+
+struct version_info
+{
+	int type;
+	int param;
+};
+
 
 
 /*
@@ -153,6 +166,8 @@ int jaguar_bmap_free_bit(struct block_device *bdev, int bmap_start, int bit);
 /*
  * Versioning APIs
  */
+int set_version(struct inode *i, struct version_info *info);
+int reset_version(struct inode *i);
 int retrieve(struct file *filp, int logical_block, int at, char __user *data);
 int prune(struct file *filp);
 

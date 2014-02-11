@@ -3,67 +3,19 @@
 #include "jaguar.h"
 #include "debug.h"
 
-struct version_buffer 
-{
-	int offset;
-	int at;
-	char data[JAGUAR_BLOCK_SIZE];
-};
-
-struct version_info
-{
-	int type;
-	int param;
-};
-
 
 static int do_version(struct inode *i, struct version_info __user *arg)
 {
-	int ret = 0;
-	struct jaguar_inode *ji;
-	struct jaguar_inode_on_disk *jid;
 	struct version_info info;
-
-	DBG("do_version: entering, inum=%d\n", (int)i->i_ino);
 
 	__copy_from_user(&info, arg, sizeof(info));
 
-	/* mark the inode as versioned */
-	ji = (struct jaguar_inode *) i->i_private;
-	ji->ver_meta_bh = NULL;
-	jid = &ji->disk_copy;
-	jid->version_type = info.type;
-	jid->version_param = info.param;
-
-	if (jid->ver_meta_block == 0) {
-		if ((ret = alloc_version_meta_block(i)) < 0) {
-			ERR("error allocating version meta block\n");
-			goto fail;
-		}
-	}
-
-	mark_inode_dirty(i);
-
-fail:
-	return ret;
+	return set_version(i, &info);
 }
 
 static int do_unversion(struct inode *i, void *arg)
 {
-	int ret = 0;
-	struct jaguar_inode *ji;
-	struct jaguar_inode_on_disk *jid;
-
-	DBG("do_unversion: entering, inum=%d\n", (int)i->i_ino);
-
-	ji = (struct jaguar_inode *) i->i_private;
-	jid = &ji->disk_copy;
-	jid->version_type = 0;
-	jid->version_param = 0;
-	jid->ver_meta_block = 0;
-	mark_inode_dirty(i);
-
-	return ret;
+	return reset_version(i);
 }
 
 static int do_retrieve(struct file *filp, struct version_buffer __user *ver_buf)

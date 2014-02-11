@@ -5,12 +5,21 @@
 #include <fcntl.h>
 #include "jaguar.h"
 
-static int jcat(const char *filename, time_t at)
+#define JAGUAR_FILENAME_MAX		60
+struct jaguar_dentry
 {
-	int fd, done = 0, nbytes;
-	struct version_buffer ver_buf;
+	unsigned int inum;
+	char name[JAGUAR_FILENAME_MAX];
+};
 
-	if ((fd = open(filename, O_RDONLY)) < 0) {
+
+static int jls(const char *dirname, time_t at)
+{
+	int fd, done = 0, nbytes, i;
+	struct version_buffer ver_buf;
+	struct jaguar_dentry *dentry;
+
+	if ((fd = open(dirname, O_RDONLY)) < 0) {
 		perror(NULL);
 		return errno;
 	}
@@ -21,12 +30,17 @@ static int jcat(const char *filename, time_t at)
 	while (!done) {
 
 		if ((nbytes = ioctl(fd, JAGUAR_IOC_RETRIEVE, &ver_buf)) < 0) {
-			perror(NULL);
-			return errno;
+			/* reading beyond end of directory.
+			 * ignore it. further down, it will anyway set
+			 * 'done' and exist graciously.
+			 */
 		}
 
-		ver_buf.data[nbytes] = 0;
-		printf("%s", ver_buf.data);
+		for (i = 0; i < nbytes; i += sizeof(*dentry)) {
+			dentry = (struct jaguar_dentry *) (ver_buf.data + i);
+			if (dentry->inum != 0)
+				printf("%s\n", dentry->name);
+		}
 
 		if (nbytes < JAGUAR_BLOCK_SIZE)
 			done = 1;
@@ -45,8 +59,8 @@ int main(int argc, char **argv)
 	time_t time_arg;
 
 	if (argc != 3) {
-		printf("Usage: jcat FILE TIME\n"
-			"FILE - filename\n"
+		printf("Usage: jls DIR TIME\n"
+			"DIR - dirname\n"
 			"TIME - time in the format DD-MM-YYYY:HH:MM:SS\n");
 		return -1;
 	}
@@ -55,5 +69,5 @@ int main(int argc, char **argv)
 	time_arg = mktime(&tm_arg);
 	//printf("now=%d, time_arg=%d\n", (int)time(NULL), (int)time_arg);
 
-	return jcat(argv[1], time_arg);
+	return jls(argv[1], time_arg);
 }

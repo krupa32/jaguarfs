@@ -36,7 +36,7 @@
 #define JAGUAR_KEEP_SAFE_VERSIONS	2
 #define JAGUAR_KEEP_SAFE_TIME		3
 
-//#define VERSION_METADATA_MAX_ENTRIES	340
+//#define VERSION_METADATA_MAX_ENTRIES	255
 #define VERSION_METADATA_MAX_ENTRIES	3
 
 /*
@@ -88,14 +88,16 @@ struct jaguar_version_metadata
 {
 	int num_entries;
 	int start_entry;
+	int next_block;
+
 	struct jaguar_version_metadata_entry
 	{
 		int logical_block;
 		int version_block;
 		int timestamp;
+		int bytes_valid;
 	} entry[VERSION_METADATA_MAX_ENTRIES];
 
-	int next_block;
 	char rsvd[4];
 };
 

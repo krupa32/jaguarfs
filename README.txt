@@ -20,8 +20,11 @@ o statfs done
 o version done for files
 o retrieve done for files
 o prune done for files
+o version, retrieve, prune for directories
 
 
 TODO
 ----
-o version, retrieve, prune for directories
+o rollback for files
+	This is done, but it crashes in ioctl retrieve sometimes. Not sure why.
+	Yet to be debugged.

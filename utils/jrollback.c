@@ -5,12 +5,12 @@
 #include <fcntl.h>
 #include "jaguar.h"
 
-static int jcat(const char *filename, time_t at)
+static int jrollback(const char *filename, time_t at)
 {
 	int fd, done = 0, nbytes;
 	struct version_buffer ver_buf;
 
-	if ((fd = open(filename, O_RDONLY)) < 0) {
+	if ((fd = open(filename, O_WRONLY|O_TRUNC)) < 0) {
 		perror(NULL);
 		return errno;
 	}
@@ -26,7 +26,12 @@ static int jcat(const char *filename, time_t at)
 		}
 
 		ver_buf.data[nbytes] = 0;
-		printf("%s", ver_buf.data);
+		//printf("restoring offset=%d, nbytes=%d\n", ver_buf.offset, nbytes);
+
+		if (write(fd, ver_buf.data, nbytes) < 0) {
+			printf("error restoring\n");
+			done = 1;
+		}
 
 		if (nbytes < JAGUAR_BLOCK_SIZE)
 			done = 1;
@@ -46,8 +51,8 @@ int main(int argc, char **argv)
 	time_t time_arg;
 
 	if (argc != 3) {
-		printf("Usage: jcat FILE TIME\n"
-			"FILE - filename\n"
+		printf("Usage: jrollback FILE/DIR TIME\n"
+			"FILE/DIR - file name or directory name\n"
 			"TIME - time in the format DD-MM-YYYY:HH:MM:SS\n");
 		return -1;
 	}
@@ -56,5 +61,5 @@ int main(int argc, char **argv)
 	time_arg = mktime(&tm_arg);
 	//printf("now=%d, time_arg=%d\n", (int)time(NULL), (int)time_arg);
 
-	return jcat(argv[1], time_arg);
+	return jrollback(argv[1], time_arg);
 }

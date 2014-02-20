@@ -973,11 +973,15 @@ static void version(struct inode *i, int logical_block, char *data)
 	jvme = &jvm->entry[jvm->num_entries];
 	jvme->logical_block = logical_block;
 	jvme->version_block = ver_block;
+	if (i->i_size < (logical_block+1)*JAGUAR_BLOCK_SIZE)
+		jvme->bytes_valid = i->i_size - (logical_block * JAGUAR_BLOCK_SIZE);
+	else
+		jvme->bytes_valid = JAGUAR_BLOCK_SIZE;
 	do_gettimeofday(&tv);
 	jvme->timestamp = tv.tv_sec;
 	jvm->num_entries++;
-	DBG("added version entry [%d,%d,%d], num_entries=%d\n", 
-		logical_block, ver_block, (int)tv.tv_sec, jvm->num_entries);
+	DBG("added version entry [%d,%d,%d,%d], num_entries=%d\n", 
+		logical_block, ver_block, jvme->bytes_valid, (int)tv.tv_sec, jvm->num_entries);
 
 	if (jvm->num_entries == VERSION_METADATA_MAX_ENTRIES) {
 		mark_buffer_dirty(ji->ver_meta_bh);
@@ -999,7 +1003,7 @@ int retrieve(struct file *filp, int logical_block, int at, char __user *data)
 	struct jaguar_inode *ji;
 	struct jaguar_inode_on_disk *jid;
 	struct buffer_head *ver_meta_bh, *bh;
-	int ver_block = 0, done = 0, j, len, next_block = 0, ret;
+	int ver_block = 0, done = 0, j, next_block = 0, ret, size = 0;
 	struct inode *i;
 	struct super_block *sb;
 	loff_t pos;
@@ -1042,6 +1046,7 @@ int retrieve(struct file *filp, int logical_block, int at, char __user *data)
 				 * so track it.
 				 */
 				ver_block = jvme->version_block;
+				size = jvme->bytes_valid;
 			}
 
 			jvme--;
@@ -1095,7 +1100,7 @@ int retrieve(struct file *filp, int logical_block, int at, char __user *data)
 		}
 	}
 
-	DBG("found version data block %d\n", ver_block);
+	DBG("found version data block %d, size=%d\n", ver_block, size);
 
 	/* a proper version block was found. read it and copy the contents
 	 * into the user space buffer passed.
@@ -1105,17 +1110,11 @@ int retrieve(struct file *filp, int logical_block, int at, char __user *data)
 		goto fail;
 	}
 
-	__copy_to_user(data, bh->b_data, JAGUAR_BLOCK_SIZE);
+	__copy_to_user(data, bh->b_data, size);
 
 	brelse(bh);
 
-	if ((logical_block+1)*JAGUAR_BLOCK_SIZE <= i->i_size)
-		len = JAGUAR_BLOCK_SIZE;
-	else
-		len = i->i_size - (logical_block*JAGUAR_BLOCK_SIZE);
-
-
-	return len;
+	return size;
 
 fail:
 	return -ENOENT;
@@ -1461,7 +1460,8 @@ static const struct file_operations jaguar_file_ops = {
 	.llseek		= generic_file_llseek,
 	.unlocked_ioctl	= jaguar_ioctl,
 	.open		= jaguar_open,
-	.release	= jaguar_release
+	.release	= jaguar_release,
+	.fsync		= generic_file_fsync
 };
 
 static const struct address_space_operations jaguar_aops = {

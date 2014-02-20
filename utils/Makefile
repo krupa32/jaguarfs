@@ -1,5 +1,8 @@
 
-all: mkfs.jaguar jagadm jcat jls
+all: mkfs.jaguar jagadm jcat jls jrollback
+
+jrollback: jrollback.c
+	gcc jrollback.c -o jrollback
 
 jls: jls.c
 	gcc jls.c -o jls
@@ -14,4 +17,4 @@ mkfs.jaguar: mkfs.c
 	gcc mkfs.c -o mkfs.jaguar
 
 clean:
-	rm -f mkfs.jaguar jagadm jcat jls
+	rm -f mkfs.jaguar jagadm jcat jls jrollback

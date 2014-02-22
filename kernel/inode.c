@@ -917,8 +917,10 @@ int alloc_version_meta_block(struct inode *i)
 	memset(jvm, 0, sizeof(*jvm));
 	jvm->next_block = old_ver_meta_block;
 	mark_buffer_dirty(ji->ver_meta_bh);
-	brelse(ji->ver_meta_bh);
-	ji->ver_meta_bh = NULL;
+
+	/* ver_meta_bh is not brelsed here.
+	 * it would be eventually released in jaguar_close().
+	 */
 
 	DBG("initialized version meta buffer on disk\n");
 

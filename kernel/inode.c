@@ -10,7 +10,7 @@
 
 int fill_inode(struct inode *i);
 long jaguar_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
-static void version(struct inode *i, int logical_block, char *data);
+static void version(struct file *filp, struct inode *i, int logical_block, int phys_block);
 static int jaguar_open(struct inode *i, struct file *f);
 static int jaguar_release(struct inode *i, struct file *f);
 
@@ -447,7 +447,7 @@ static int write_inode_data(struct inode *i,
 		 * ver_meta_bh is loaded.
 		 */
 		jaguar_open(i, NULL);
-		version(i, logical_block, bh->b_data);
+		version(NULL, i, logical_block, block);
 		jaguar_release(i, NULL);
 	}
 
@@ -551,7 +551,6 @@ static int create_file_dir(struct inode *parent,
 		ret = -ENOMEM;
 		goto fail;
 	}
-
 	ji = (struct jaguar_inode *) i->i_private;
 	jid = &ji->disk_copy;
 	jid->size = 0;
@@ -928,20 +927,72 @@ fail:
 	return ret;
 }
 
-static void version(struct inode *i, int logical_block, char *data)
+/*
+ * filp			: valid only when files are versioned
+ * i			: valid always
+ * logical_block	: valid for files and dirs
+ * phys_block		: valid only for dirs
+ */
+static void version(struct file *filp, struct inode *i, int logical_block, int phys_block)
 {
-	struct buffer_head *ver_bh;
+	struct buffer_head *ver_bh, *bh = NULL;
 	struct super_block *sb;
 	struct jaguar_version_metadata *jvm = NULL;
-	struct jaguar_version_metadata_entry *jvme;
+	struct jaguar_version_metadata_entry *jvme, *last_jvme;
 	struct jaguar_inode *ji;
-	int ver_block;
+	int ver_block, ret;
 	struct timeval tv;
+	char *data;
+	loff_t readpos;
+	mm_segment_t oldfs;
 
 	DBG("version: entering: inum=%d, logical=%d\n",
 		(int)i->i_ino, logical_block);
 
 	sb = i->i_sb;
+
+	ji = (struct jaguar_inode *) i->i_private;
+	if (ji->ver_meta_bh == NULL) {
+		DBG("error: ver_meta_bh is NULL\n");
+		return;
+	}
+	jvm = (struct jaguar_version_metadata *) ji->ver_meta_bh->b_data;
+
+	/* throttle versioning rate.
+	 * one entry per second is more than adequate.
+	 * if last versioning entry was also added at the same second,
+	 * do not version this change. just return.
+	 */
+	do_gettimeofday(&tv);
+	if (jvm->num_entries > 0) {
+		last_jvme = &jvm->entry[jvm->num_entries - 1];
+		if (last_jvme->timestamp == tv.tv_sec)
+			return;
+	}
+
+	/* read the old data that is to be versioned. 2 cases here:
+	 * 1) for files: filp is valid, and old data is read from filp
+	 *    using logical_block
+	 * 2) for dirs: filp is NULL, and old data is directly read from bdev
+	 *    using phys_block
+	 */
+	if (filp) {
+		readpos = logical_block * JAGUAR_BLOCK_SIZE;
+		oldfs = get_fs();
+		set_fs(KERNEL_DS);
+		ret = do_sync_read(filp, ji->ver_data_buf, JAGUAR_BLOCK_SIZE, &readpos);
+		set_fs(oldfs);
+		DBG("do_sync_read returned %d, buf[0]=%c\n", ret, ji->ver_data_buf[0]);
+		if (ret <= 0)
+			goto fail;
+		data = ji->ver_data_buf;
+	} else {
+		if ((bh = __bread(i->i_sb->s_bdev, phys_block, JAGUAR_BLOCK_SIZE)) == NULL) {
+			ERR("error reading inode from disk\n");
+			goto fail;
+		}
+		data = bh->b_data;
+	}
 
 	/* allocate a new version data block to store old data */
 	if ((ver_block = alloc_data_block(sb)) < 0) {
@@ -966,12 +1017,6 @@ static void version(struct inode *i, int logical_block, char *data)
 
 
 	/* update version metadata entry */
-	ji = (struct jaguar_inode *) i->i_private;
-	if (ji->ver_meta_bh == NULL) {
-		DBG("error: ver_meta_bh is NULL\n");
-		return;
-	}
-	jvm = (struct jaguar_version_metadata *) ji->ver_meta_bh->b_data;
 	jvme = &jvm->entry[jvm->num_entries];
 	jvme->logical_block = logical_block;
 	jvme->version_block = ver_block;
@@ -979,12 +1024,14 @@ static void version(struct inode *i, int logical_block, char *data)
 		jvme->bytes_valid = i->i_size - (logical_block * JAGUAR_BLOCK_SIZE);
 	else
 		jvme->bytes_valid = JAGUAR_BLOCK_SIZE;
-	do_gettimeofday(&tv);
 	jvme->timestamp = tv.tv_sec;
 	jvm->num_entries++;
 	DBG("added version entry [%d,%d,%d,%d], num_entries=%d\n", 
 		logical_block, ver_block, jvme->bytes_valid, (int)tv.tv_sec, jvm->num_entries);
 
+	/* if all meta entries are exhausted, write out this ver meta block
+	 * and allocate a new one.
+	 */
 	if (jvm->num_entries == VERSION_METADATA_MAX_ENTRIES) {
 		mark_buffer_dirty(ji->ver_meta_bh);
 		brelse(ji->ver_meta_bh);
@@ -995,6 +1042,8 @@ static void version(struct inode *i, int logical_block, char *data)
 	}
 
 fail:
+	if (bh)
+		brelse(bh);
 	return;
 }
 
@@ -1328,7 +1377,7 @@ static int jaguar_write_end(struct file *file, struct address_space *mapping,
 	return generic_write_end(file, mapping, pos, len, copied, page, fsdata);
 }
 
-static int jaguar_open(struct inode *i, struct file *f)
+static int jaguar_open(struct inode *i, struct file *filp)
 {
 	int ret = 0, logical_block;
 	struct jaguar_inode *ji;
@@ -1343,19 +1392,23 @@ static int jaguar_open(struct inode *i, struct file *f)
 
 	DBG("entering jaguar_open: inum=%d\n", (int)i->i_ino);
 
-	if (jid->version_type != 0 && ji->ver_meta_bh == NULL) {
-		/* read the version meta block into a buffer */
-		if ((ji->ver_meta_bh = __bread(sb->s_bdev, jid->ver_meta_block, JAGUAR_BLOCK_SIZE)) == NULL) {
-			ERR("could not read version meta block\n");
-			ret = -ENOMEM;
-			goto fail;
+	if (jid->version_type != 0) {
+		if (ji->ver_meta_bh == NULL) {
+			/* read the version meta block into a buffer */
+			if ((ji->ver_meta_bh = __bread(sb->s_bdev, jid->ver_meta_block, JAGUAR_BLOCK_SIZE)) == NULL) {
+				ERR("could not read version meta block\n");
+				ret = -ENOMEM;
+				goto fail;
+			}
 		}
 
-		/* allocate a buffer to hold data that is to be versioned */
-		if ((ji->ver_data_buf = kmalloc(JAGUAR_BLOCK_SIZE, GFP_KERNEL)) == NULL) {
-			ERR("could not allocated version data buffer\n");
-			ret = -ENOMEM;
-			goto fail;
+		if (ji->ver_data_buf == NULL) {
+			/* allocate a buffer to hold data that is to be versioned */
+			if ((ji->ver_data_buf = kmalloc(JAGUAR_BLOCK_SIZE, GFP_KERNEL)) == NULL) {
+				ERR("could not allocate version data buffer\n");
+				ret = -ENOMEM;
+				goto fail;
+			}
 		}
 	}
 
@@ -1363,18 +1416,17 @@ static int jaguar_open(struct inode *i, struct file *f)
 	 * file are freed immediately after the file is opened. the file's
 	 * data should be backed up in jaguar_open() itself.
 	 */
-	if (jid->version_type != 0 && f && (f->f_flags & O_TRUNC)) {
+	if (jid->version_type != 0 && filp && (filp->f_flags & O_TRUNC)) {
 		DBG("O_TRUNC is set, backing up all file data\n");
 		logical_block = 0;
 		readpos = 0;
 		while (1) {
 			oldfs = get_fs();
 			set_fs(KERNEL_DS);
-			ret = do_sync_read(f, ji->ver_data_buf, JAGUAR_BLOCK_SIZE, &readpos);
+			ret = do_sync_read(filp, ji->ver_data_buf, JAGUAR_BLOCK_SIZE, &readpos);
 			set_fs(oldfs);
-			DBG("do_sync_read returned %d, buf[0] = %c\n", ret, ji->ver_data_buf[0]);
 			if (ret > 0)
-				version(i, logical_block, ji->ver_data_buf);
+				version(filp, i, logical_block, 0);
 			if (ret < JAGUAR_BLOCK_SIZE)
 				break;
 			logical_block++;
@@ -1409,9 +1461,7 @@ static int jaguar_release(struct inode *i, struct file *f)
 
 ssize_t jaguar_write(struct file *filp, const char __user *buf, size_t len, loff_t *pos)
 {
-	int ret, logical_block;
-	loff_t readpos;
-	mm_segment_t oldfs;
+	int logical_block;
 	struct inode *i;
 	struct jaguar_inode *ji;
 	struct jaguar_inode_on_disk *jid;
@@ -1432,14 +1482,7 @@ ssize_t jaguar_write(struct file *filp, const char __user *buf, size_t len, loff
 	 */
 	if (jid->version_type != 0) {
 		logical_block = *pos / JAGUAR_BLOCK_SIZE;
-		readpos = logical_block * JAGUAR_BLOCK_SIZE;
-		oldfs = get_fs();
-		set_fs(KERNEL_DS);
-		ret = do_sync_read(filp, ji->ver_data_buf, JAGUAR_BLOCK_SIZE, &readpos);
-		set_fs(oldfs);
-		DBG("do_sync_read returned %d, buf[0]=%c\n", ret, ji->ver_data_buf[0]);
-		if (ret > 0)
-			version(i, logical_block, ji->ver_data_buf);
+		version(filp, i, logical_block, 0);
 	}
 
 	return do_sync_write(filp, buf, len, pos);

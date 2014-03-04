@@ -1,7 +1,7 @@
 #ifndef DBG_H
 #define DBG_H
 
-//#define NODEBUG
+#define NODEBUG
 
 #ifdef NODEBUG
 #define DBG(x,...)

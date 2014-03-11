@@ -34,7 +34,6 @@ int main(int argc, char **argv)
 	}
 
 	gettimeofday(&tv_before, NULL);
-	printf("before:%d,%d\n", (int)tv_before.tv_sec, (int)tv_before.tv_usec);
 
 	for (i = 0; i < count; i++) {
 		lseek(fd, 0, SEEK_SET);
@@ -45,7 +44,6 @@ int main(int argc, char **argv)
 	}
 
 	gettimeofday(&tv_after, NULL);
-	printf("after:%d,%d\n", (int)tv_after.tv_sec, (int)tv_after.tv_usec);
 
 	time = (tv_after.tv_sec - tv_before.tv_sec) * 1000000;
 	if (tv_after.tv_usec >= tv_before.tv_usec)

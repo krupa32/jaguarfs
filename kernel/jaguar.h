@@ -28,6 +28,7 @@
 #define JAGUAR_IOC_UNVERSION		_IO('f', 101)
 #define JAGUAR_IOC_RETRIEVE		_IOWR('f', 102, int)
 #define JAGUAR_IOC_PRUNE		_IO('f', 103)
+#define JAGUAR_IOC_ROLLBACK_DIR		_IOW('f', 104, int)
 
 /*
  * version flags
@@ -172,6 +173,7 @@ int set_version(struct inode *i, struct version_info *info);
 int reset_version(struct inode *i);
 int retrieve(struct file *filp, int logical_block, int at, char __user *data);
 int prune(struct file *filp);
+int rollback_dir(struct inode *i, int offset, int nbytes, char __user *data);
 
 
 #endif // JAGUAR_H

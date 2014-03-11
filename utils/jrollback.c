@@ -3,16 +3,30 @@
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include "jaguar.h"
 
 static int jrollback(const char *filename, time_t at)
 {
 	int fd, done = 0, nbytes;
 	struct version_buffer ver_buf;
+	struct stat info;
 
-	if ((fd = open(filename, O_WRONLY|O_TRUNC)) < 0) {
-		perror(NULL);
+	if (stat(filename, &info) < 0) {
+		perror("stat");
 		return errno;
+	}
+
+	if (S_ISDIR(info.st_mode)) {
+		if ((fd = open(filename, O_RDONLY)) < 0) {
+			perror("open");
+			return errno;
+		}
+	} else {
+		if ((fd = open(filename, O_WRONLY|O_TRUNC)) < 0) {
+			perror("open");
+			return errno;
+		}
 	}
 
 	memset(&ver_buf, 0, sizeof(ver_buf));
@@ -28,9 +42,22 @@ static int jrollback(const char *filename, time_t at)
 		ver_buf.data[nbytes] = 0;
 		//printf("restoring offset=%d, nbytes=%d\n", ver_buf.offset, nbytes);
 
-		if (write(fd, ver_buf.data, nbytes) < 0) {
-			printf("error restoring\n");
-			done = 1;
+		if (S_ISDIR(info.st_mode)) {
+			/* use 'at' to pass nbytes */
+			ver_buf.at = nbytes;
+
+			if (ioctl(fd, JAGUAR_IOC_ROLLBACK_DIR, &ver_buf) < 0) {
+				printf("error restoring\n");
+				done = 1;
+			}
+
+			/* restore 'at' */
+			ver_buf.at = at;
+		} else {
+			if (write(fd, ver_buf.data, nbytes) < 0) {
+				printf("error restoring\n");
+				done = 1;
+			}
 		}
 
 		if (nbytes < JAGUAR_BLOCK_SIZE)

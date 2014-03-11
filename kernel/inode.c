@@ -391,6 +391,10 @@ static int read_inode_data(struct inode *i,
 	/* copy the data at offset */
 	memcpy(data, bh->b_data + offset, size);
 
+	ret = pos + size;
+	if ((pos + size) > i->i_size)
+		ret = i->i_size - pos;
+
 fail:
 	if (bh)
 		brelse(bh);
@@ -498,7 +502,7 @@ static int jaguar_readdir(struct file *filp, void *dirent, filldir_t filldir)
 	while (filp->f_pos < i->i_size) {
 
 		/* read a dentry from disk */
-		if (read_inode_data(i, (int)filp->f_pos, sizeof(jd), &jd)) {
+		if (read_inode_data(i, (int)filp->f_pos, sizeof(jd), &jd) < 0) {
 			ERR("error reading dentry from disk\n");
 			goto out;
 		}
@@ -579,7 +583,7 @@ static int create_file_dir(struct inode *parent,
 	/* find a new empty dentry under the parent dir */
 	pos = 0;
 	while (pos < parent->i_size) {
-		if (read_inode_data(parent, pos, sizeof(jd), &jd)) {
+		if (read_inode_data(parent, pos, sizeof(jd), &jd) < 0) {
 			ERR("error reading dentry at offset %d\n", pos);
 			ret = -EIO;
 			goto fail;
@@ -678,10 +682,21 @@ static int free_all_data_blocks(struct inode *inode)
 {
 	int n_blocks, ret = 0, block, i, n_blocks_freed = 0, level;
 	struct jaguar_inode *ji = (struct jaguar_inode *)inode->i_private;
+	struct jaguar_inode_on_disk *jid = &ji->disk_copy;
 	int max_blks_at_level[] = { 12, 1024, 1048576 };
 
 	n_blocks = (inode->i_size + JAGUAR_BLOCK_SIZE - 1 ) / JAGUAR_BLOCK_SIZE;
 	DBG("free_all_data_blocks: freeing %d blocks\n", n_blocks);
+
+	/* if file/dir is versioned, then free the ver meta block.
+	 * actually, there might be more ver meta blocks linked together,
+	 * but they are not freed as of now. an easy way to do it would
+	 * be to set version type as keep_safe_versions and version_param
+	 * as 0, and then call prune().
+	 * but for now, only the latest ver meta block is freed.
+	 */
+	if (jid->version_type != 0 && jid->ver_meta_block != 0)
+		free_data_block(inode->i_sb, jid->ver_meta_block);
 
 	i = 0;
 	while (n_blocks_freed < n_blocks) {
@@ -734,7 +749,7 @@ static int unlink_file_dir(struct inode *parent, struct dentry *d)
 	/* find the dentry under the parent dir */
 	pos = 0;
 	while (pos < parent->i_size) {
-		if (read_inode_data(parent, pos, sizeof(jd), &jd)) {
+		if (read_inode_data(parent, pos, sizeof(jd), &jd) < 0) {
 			ERR("error reading dentry at offset %d\n", pos);
 			ret = -EIO;
 			goto fail;
@@ -830,7 +845,7 @@ static struct dentry *jaguar_lookup(struct inode *parent, struct dentry *d, stru
 
 	while (pos < parent->i_size) {
 		/* read a dentry */
-		if (read_inode_data(parent, pos, sizeof(jd), &jd)) {
+		if (read_inode_data(parent, pos, sizeof(jd), &jd) < 0) {
 			ERR("error reading dentry at offset %d\n", pos);
 			ret = -EIO;
 			goto fail;
@@ -1147,7 +1162,7 @@ int retrieve(struct file *filp, int logical_block, int at, char __user *data)
 			ret = read_inode_data(i, (int)pos, JAGUAR_BLOCK_SIZE, kdata);
 			__copy_to_user(data, kdata, JAGUAR_BLOCK_SIZE);
 			kfree(kdata);
-			return (ret == 0) ? JAGUAR_BLOCK_SIZE: ret;
+			return ret;
 		}
 	}
 
@@ -1297,6 +1312,36 @@ fail:
 	return 0;
 }
 
+
+/* Note: Rolling back dir is currently just overwriting the directory
+ * contents on disk. It DOES NOT invalidate the dentries already cached
+ * by VFS. So, even though 'ls' would display the latest dir entries,
+ * older (non-existing) file names may still be resolved. However, this
+ * should not happen after a umount/mount.
+ */
+int rollback_dir(struct inode *i, int offset, int nbytes, char __user *data)
+{
+	int ret = 0;
+	void *buf;
+
+	DBG("rollback_dir: entering, offset=%d, nbytes=%d\n", offset, nbytes);
+
+	if ((buf = kmalloc(JAGUAR_BLOCK_SIZE, GFP_KERNEL)) == NULL) {
+		ERR("could not allocate mem\n");
+		return -ENOMEM;
+	}
+
+	__copy_from_user(buf, data, JAGUAR_BLOCK_SIZE);
+
+	ret = write_inode_data(i, offset, nbytes, buf);
+
+	i->i_size = offset + nbytes;
+	mark_inode_dirty(i);
+
+	kfree(buf);
+
+	return ret;
+}
 
 static int jaguar_get_block(struct inode *i, sector_t logical_block,
 		struct buffer_head *bh, int create)

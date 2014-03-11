@@ -1,7 +1,10 @@
-all: overwrite
+all: overwrite create
 
 overwrite: overwrite.c
 	gcc $^ -o $@
 
+create: create.c
+	gcc $^ -o $@
+
 clean:
-	rm overwrite
+	rm overwrite create

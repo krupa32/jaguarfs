@@ -51,7 +51,7 @@ int main(int argc, char **argv)
 		time += (tv_after.tv_usec + 1000000) - tv_before.tv_usec - 1000000;
 
 	tp = ((float)count * num_files) / time * 1000000;
-	printf("total time = %f, rate = %.2f million files/sec\n", (float)time/1000000, tp);
+	printf("total time = %f, rate = %.2f files/sec\n", (float)time/1000000, tp);
 
 		
 	return 0;

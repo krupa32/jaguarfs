@@ -9,6 +9,8 @@
 #define ACTION_VERSION		1
 #define ACTION_UNVERSION	2
 #define ACTION_PRUNE		3
+#define ACTION_DUMP		4
+#define ACTION_RESET		5
 
 static void usage(void)
 {
@@ -17,6 +19,8 @@ static void usage(void)
 		"version        - Version the FILE/DIR\n"
 		"unversion      - Unversion the FILE/DIR\n"
 		"prune		- Remove the older versions that are not needed\n"
+		"dump		- Dump statistics\n"
+		"reset		- Reset statistics\n"
 		"TYPE can be\n"
 		"all		- Keep all older versions\n"
 		"time		- Keep versions within last few seconds\n"
@@ -100,6 +104,53 @@ err:
 	return ret;
 }
 
+static int dump(const char *filename)
+{
+	int fd = -1, ret = -EINVAL;
+
+	if ((fd = open(filename, O_RDONLY)) < 0) {
+		ret = errno;
+		perror(NULL);
+		goto err;
+	}
+
+	if ((ret = ioctl(fd, JAGUAR_IOC_DUMP_STAT, NULL)) < 0) {
+		ret = errno;
+		perror(NULL);
+		goto err;
+	}
+
+err:
+	if (fd > 0)
+		close(fd);
+
+	return ret;
+}
+
+static int reset(const char *filename)
+{
+	int fd = -1, ret = -EINVAL;
+
+	if ((fd = open(filename, O_RDONLY)) < 0) {
+		ret = errno;
+		perror(NULL);
+		goto err;
+	}
+
+	if ((ret = ioctl(fd, JAGUAR_IOC_RESET_STAT, NULL)) < 0) {
+		ret = errno;
+		perror(NULL);
+		goto err;
+	}
+
+err:
+	if (fd > 0)
+		close(fd);
+
+	return ret;
+}
+
+
 
 int main(int argc, char **argv)
 {
@@ -115,6 +166,10 @@ int main(int argc, char **argv)
 				action = ACTION_UNVERSION;
 			} else if (strcmp(optarg, "prune") == 0) {
 				action = ACTION_PRUNE;
+			} else if (strcmp(optarg, "dump") == 0) {
+				action = ACTION_DUMP;
+			} else if (strcmp(optarg, "reset") == 0) {
+				action = ACTION_RESET;
 			} else {
 				usage();
 				exit(1);
@@ -150,6 +205,12 @@ int main(int argc, char **argv)
 		break;
 	case ACTION_PRUNE:
 		ret = prune(argv[optind]);
+		break;
+	case ACTION_DUMP:
+		ret = dump(argv[optind]);
+		break;
+	case ACTION_RESET:
+		ret = reset(argv[optind]);
 		break;
 	}
 

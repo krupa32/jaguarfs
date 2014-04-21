@@ -3,6 +3,8 @@
 #include "jaguar.h"
 #include "debug.h"
 
+/* statistics */
+int num_version_calls = 0;
 
 static int do_version(struct inode *i, struct version_info __user *arg)
 {
@@ -46,6 +48,22 @@ static int do_rollback_dir(struct inode *i, struct version_buffer __user *ver_bu
 	return rollback_dir(i, offset, nbytes, ver_buf->data);
 }
 
+static int do_reset_stat(void)
+{
+	DBG("do_reset_stat: entering\n");
+	num_version_calls = 0;
+
+	return 0;
+}
+
+static int do_dump_stat(void)
+{
+	DBG("do_dump_stat: entering\n");
+	ERR("num_version_calls=%d\n", num_version_calls);
+
+	return 0;
+}
+
 long jaguar_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	int ret = -ENOTTY;
@@ -68,6 +86,12 @@ long jaguar_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 	case JAGUAR_IOC_ROLLBACK_DIR:
 		ret = do_rollback_dir(i, (struct version_buffer *)arg);
+		break;
+	case JAGUAR_IOC_RESET_STAT:
+		ret = do_reset_stat();
+		break;
+	case JAGUAR_IOC_DUMP_STAT:
+		ret = do_dump_stat();
 		break;
 	default:
 		ret = -ENOTTY;

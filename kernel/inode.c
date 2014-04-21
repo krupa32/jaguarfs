@@ -8,6 +8,9 @@
 #include "jaguar.h"
 #include "debug.h"
 
+/* statistics variables. defined in ioctl.c */
+extern int num_version_calls;
+
 int fill_inode(struct inode *i);
 long jaguar_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 static void version(struct file *filp, struct inode *i, int logical_block, int phys_block);
@@ -964,6 +967,8 @@ static void version(struct file *filp, struct inode *i, int logical_block, int p
 	DBG("version: entering: inum=%d, logical=%d\n",
 		(int)i->i_ino, logical_block);
 
+	num_version_calls++;
+
 	sb = i->i_sb;
 
 	ji = (struct jaguar_inode *) i->i_private;
@@ -1506,12 +1511,12 @@ static int jaguar_release(struct inode *i, struct file *f)
 
 ssize_t jaguar_write(struct file *filp, const char __user *buf, size_t len, loff_t *pos)
 {
-	int logical_block;
+	int logical_block, remaining = len;
 	struct inode *i;
 	struct jaguar_inode *ji;
 	struct jaguar_inode_on_disk *jid;
 
-	DBG("jaguar_write: entering\n");
+	DBG("jaguar_write: entering pos=%d, len=%d\n", (int)*pos, len);
 
 	i = filp->f_dentry->d_inode;
 	ji = (struct jaguar_inode *) i->i_private;
@@ -1527,7 +1532,11 @@ ssize_t jaguar_write(struct file *filp, const char __user *buf, size_t len, loff
 	 */
 	if (jid->version_type != 0) {
 		logical_block = *pos / JAGUAR_BLOCK_SIZE;
-		version(filp, i, logical_block, 0);
+		while (remaining > 0) {
+			version(filp, i, logical_block, 0);
+			remaining -= JAGUAR_BLOCK_SIZE;
+			logical_block++;
+		}
 	}
 
 	return do_sync_write(filp, buf, len, pos);

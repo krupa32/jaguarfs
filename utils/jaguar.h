@@ -13,6 +13,8 @@
 #define JAGUAR_IOC_RETRIEVE		_IOWR('f', 102, int)
 #define JAGUAR_IOC_PRUNE		_IO('f', 103)
 #define JAGUAR_IOC_ROLLBACK_DIR		_IOW('f', 104, int)
+#define JAGUAR_IOC_RESET_STAT		_IO('f', 105)
+#define JAGUAR_IOC_DUMP_STAT		_IO('f', 106)
 
 /*
  * versioning types

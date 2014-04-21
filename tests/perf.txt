@@ -1,0 +1,46 @@
+
+1) Overwrite test
+-------------------------
+'Block size' bytes at offset 0 are overwritten 20 million times.
+Time is measured and time overhead calculated.
+
+Block Size	Without		With		Perf Deg(%)	Total Time	Storage Overhead	Version
+		MBps	Blocks	MBps	Blocks					(Extra bytes/million data bytes)
+512		731.73	1	678.09	19	7.33		14.73		7.2			20000000
+2048		2486.6	1	2338.38	22	5.96		17.82		2.1			20000000
+4096		4105.29	1	3901.92	25	4.95		21.18		1.2			20000000
+8192		4874.41	2	4631.86	40	4.97		34.95		0.95			40000000
+16384		5031.53	4	4764.25	77	5.31		69.62		0.91			80000000
+
+Performance degradation averages at 5%.
+For 512, 2048 block sizes, the degradation is more as 4096 is backed up
+anyway. So the ratio of data transferred to data backed up is less, and hence
+more degradation.
+After 4096 block size, degradation averages at 5%.
+
+Storage overhead consistently reduces as block size increases.
+This is due to the fact that as block size increases, throughput increases,
+and hence same number of bytes are transferred in lesser time. Since number of blocks versioned
+depends on time (due to version throttling), extra bytes decreases as throughput increases.
+
+2) File Creation test
+---------------------
+'Num files' files are created and deleted continously for ?? times.
+Num files processed per sec is calculated and degradation is measured.
+
+Num files	Without			With			Perf Deg (%)	Total Time	Storage Overhead	Version
+		Files/sec	Blocks	Files/sec	Blocks					(Extra bytes/file)
+1024		14303.31	17	13903.87	18	2.7		0.13		4			2048
+2048		6828.56		33	6593.55		35	3.4		0.60		4			4096
+4096		3106.05		65	2999.24		69	3.4		2.71		4			8192
+8192		1455.57		129	1414.45		142	2.8		11.4		6.5			16384
+16384		703.20		257	685.86		305	2.4		47.31		12			32768
+
+As the number of files created increases, the number of times version is
+called also increases proportionately, and hence the degradation remains at
+a constant average of 3%.
+
+Storage overhead increases as number of files increases. The reason is that as number of files
+increase, num files processed / sec decreases. therefore, it takes more time to create and delete
+same number of files. As num blocks versioned depends on time (due to throttling), extra bytes
+per file increases with num files processed.
